@@ -23,7 +23,7 @@ risk-parity portfolio", "price these options / greeks", "devig this Polymarket l
 
 ## What's inside
 
-This plugin ships a single skill, `claude-quant`:
+This plugin ships the `claude-quant` skill **plus 10 specialized subagents** (listed below). The skill provides:
 
 - **`SKILL.md`** — entry point: Iron Laws, task router, canonical conventions
 - **`references/`** — 19 on-demand deep-dives (factor research, transaction costs, ML for
@@ -35,6 +35,27 @@ This plugin ships a single skill, `claude-quant`:
 
 See [`skills/claude-quant/README.md`](skills/claude-quant/README.md) for the full layout
 and the verification commands.
+
+## Agents
+
+Ten specialized subagents you can hand a focused job. Each enforces the same Iron Laws
+and cites the skill's references/templates:
+
+| Agent | What it does |
+|---|---|
+| `backtest-auditor` | Read-only forensic audit of a backtest for look-ahead, survivorship, cost, and multiple-testing bugs |
+| `overfitting-detective` | Deflated/Probabilistic Sharpe, permutation & bootstrap tests, plateau-vs-spike, trial-count budget |
+| `factor-researcher` | Cross-sectional factor design & evaluation: IC/rank-IC, neutralization, quantile spreads, Fama-MacBeth |
+| `portfolio-architect` | Portfolio construction: MVO, risk parity/ERC, HRP, Black-Litterman, shrinkage, vol targeting |
+| `risk-manager` | VaR/ES, component risk, factor & scenario stress, limits, VaR backtesting |
+| `execution-cost-analyst` | Cost & market-impact modeling, capacity, and TWAP/VWAP/Almgren-Chriss execution |
+| `data-integrity-sentinel` | Audits a data pipeline for point-in-time, survivorship, roll, calendar, and NaN errors |
+| `options-quant` | Pricing & greeks, implied-vol surfaces, hedging, scenario P&L |
+| `stat-arb-strategist` | Cointegration, pairs/baskets, half-life, z-score entries, out-of-sample stability |
+| `quant-code-reviewer` | Numerical correctness, hidden leakage in rolling/groupby, reproducibility, performance |
+
+Invoke one by describing the task ("audit my backtest", "is this overfit?", "construct a
+risk-parity portfolio") or by name.
 
 ## Verify
 
