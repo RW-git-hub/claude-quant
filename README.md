@@ -23,7 +23,7 @@ risk-parity portfolio", "price these options / greeks", "devig this Polymarket l
 
 ## What's inside
 
-This plugin ships the `claude-quant` skill **plus 20 specialized subagents** (listed below). The skill provides:
+This plugin ships the `claude-quant` skill, **13 focused quick-draw skills**, and **20 specialized subagents** (all listed below). The `claude-quant` skill provides:
 
 - **`SKILL.md`** — entry point: Iron Laws, task router, canonical conventions
 - **`references/`** — 19 on-demand deep-dives (factor research, transaction costs, ML for
@@ -66,6 +66,27 @@ and cites the skill's references/templates:
 
 Invoke one by describing the task ("audit my backtest", "is this overfit?", "construct a
 risk-parity portfolio") or by name.
+
+## Quick-draw skills
+
+Beyond the broad `claude-quant` skill, the plugin ships 13 focused, task-triggered skills —
+tight playbooks that fire on a specific job and point you at the right template:
+
+| Skill | Fires on |
+|---|---|
+| `performance-metrics` | Sharpe/Sortino/Calmar/drawdown + deflated & probabilistic Sharpe |
+| `leakproof-backtest` | stand up a leak-free vectorized backtest (lagged, costed) |
+| `walk-forward-validation` | purged/embargoed CV & CPCV, trial budget |
+| `position-sizing` | Kelly, fractional Kelly, vol targeting, risk-parity weights |
+| `factor-screen` | IC/rank-IC, quantile spreads, decay for a cross-sectional signal |
+| `pairs-cointegration` | cointegration test, half-life, z-score pair trade |
+| `option-pricing-greeks` | price options, greeks, implied vol |
+| `risk-report` | VaR/ES, component risk, stress, VaR backtest |
+| `transaction-cost-model` | realistic costs, market impact, break-even, capacity |
+| `monte-carlo-risk` | bootstrap/MC paths, drawdown distribution, risk of ruin |
+| `data-pit-audit` | point-in-time / survivorship / roll / calendar audit |
+| `devig-kelly-betting` | devig odds, fair probs, Kelly stake, CLV (prediction/sports) |
+| `vol-forecast` | causal EWMA/GARCH/HAR volatility forecasting |
 
 ## Verify
 
