@@ -23,7 +23,7 @@ risk-parity portfolio", "price these options / greeks", "devig this Polymarket l
 
 ## What's inside
 
-This plugin ships the `claude-quant` skill **plus 10 specialized subagents** (listed below). The skill provides:
+This plugin ships the `claude-quant` skill **plus 20 specialized subagents** (listed below). The skill provides:
 
 - **`SKILL.md`** — entry point: Iron Laws, task router, canonical conventions
 - **`references/`** — 19 on-demand deep-dives (factor research, transaction costs, ML for
@@ -38,7 +38,7 @@ and the verification commands.
 
 ## Agents
 
-Ten specialized subagents you can hand a focused job. Each enforces the same Iron Laws
+Twenty specialized subagents you can hand a focused job. Each enforces the same Iron Laws
 and cites the skill's references/templates:
 
 | Agent | What it does |
@@ -53,6 +53,16 @@ and cites the skill's references/templates:
 | `options-quant` | Pricing & greeks, implied-vol surfaces, hedging, scenario P&L |
 | `stat-arb-strategist` | Cointegration, pairs/baskets, half-life, z-score entries, out-of-sample stability |
 | `quant-code-reviewer` | Numerical correctness, hidden leakage in rolling/groupby, reproducibility, performance |
+| `ml-alpha-engineer` | ML alpha pipelines: triple-barrier labeling, meta-labeling, sample weights, purged/CPCV, fractional differentiation |
+| `regime-detector` | Causal vol forecasting (GARCH/HAR), HMM/Markov regimes, change points, Kalman dynamic beta |
+| `crypto-defi-quant` | Perp funding/basis, AMM/LP economics, impermanent loss, liquidations, crypto data hazards |
+| `prediction-market-analyst` | Devig, fair odds, Kelly staking, CLV, calibration (Polymarket/Kalshi/sports) |
+| `live-trading-engineer` | OMS/EMS state machine, reconciliation, pre-trade risk, kill switches, monitoring |
+| `market-microstructure-analyst` | Order book, adverse selection, spread decomposition, VPIN, Avellaneda-Stoikov quoting |
+| `rates-fx-quant` | Yield curves, DV01/key-rate risk, carry & roll, FX carry, cross-currency basis |
+| `volatility-strategist` | Variance/vol risk premium, VIX term structure, variance swaps, dispersion, vol targeting |
+| `performance-attribution-analyst` | Brinson + factor attribution, P&L decomposition, cost/shortfall attribution |
+| `alpha-research-strategist` | Front-of-funnel hypothesis generation, prioritization, trial-budget & OOS plan |
 
 Invoke one by describing the task ("audit my backtest", "is this overfit?", "construct a
 risk-parity portfolio") or by name.
