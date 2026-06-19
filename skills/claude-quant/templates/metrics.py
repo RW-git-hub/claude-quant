@@ -17,6 +17,8 @@ CONVENTIONS (applied consistently everywhere):
 References:
 - Bailey & Lopez de Prado (2012), "The Sharpe Ratio Efficient Frontier"
   (Probabilistic & Deflated Sharpe Ratio).
+- Bailey & Lopez de Prado (2014), "The Deflated Sharpe Ratio" (effective number
+  of independent trials when grid points are correlated).
 - Lo (2002), "The Statistics of Sharpe Ratios" (autocorrelation caveat: the
   sqrt(ppy) scaling assumes iid returns; serial correlation biases it).
 """
@@ -268,9 +270,13 @@ def probabilistic_sharpe_ratio(returns, benchmark_sr: float = 0.0,
     return _NORM.cdf(z)
 
 
-def expected_max_sharpe(trial_sharpe_std: float, n_trials: int) -> float:
+def expected_max_sharpe(trial_sharpe_std: float, n_trials: float) -> float:
     """Expected maximum of n_trials iid Sharpe estimates under the null
-    (per-period units). Used by the Deflated Sharpe Ratio."""
+    (per-period units). Used by the Deflated Sharpe Ratio.
+
+    `n_trials` may be a non-integer EFFECTIVE count (see
+    effective_number_of_trials); the order-statistic approximation is smooth in N
+    and well-defined for real N > 1."""
     if n_trials <= 1:
         return 0.0
     z1 = _NORM.inv_cdf(1 - 1.0 / n_trials)
@@ -278,15 +284,164 @@ def expected_max_sharpe(trial_sharpe_std: float, n_trials: int) -> float:
     return trial_sharpe_std * ((1 - _EULER) * z1 + _EULER * z2)
 
 
-def deflated_sharpe_ratio(returns, n_trials: int, trial_sharpe_std: float,
+# --------------------------------------------------------------------------- #
+# Effective number of trials (correlated-trial deflation, LdP 2014)
+# --------------------------------------------------------------------------- #
+def _trial_corr_matrix(trial_returns_matrix) -> np.ndarray:
+    """Correlation matrix of the N per-trial return series.
+
+    Input is a (T x N) array: T time periods (rows) by N trials/configs (cols),
+    each column the per-period return stream of one strategy variant. Any row with
+    a NaN is dropped so the matrix is computed on a common, aligned sample.
+    Zero-variance (constant) columns are kept with zero off-diagonal correlation
+    and unit diagonal so they neither crash corrcoef nor inflate N_eff."""
+    m = np.asarray(pd.DataFrame(trial_returns_matrix, dtype="float64").dropna(),
+                   dtype=float)
+    if m.ndim != 2 or m.shape[1] < 1:
+        raise ValueError("trial_returns_matrix must be 2-D (T x N) with N >= 1")
+    T, N = m.shape
+    if T < 3:
+        raise ValueError("need at least 3 aligned time periods to estimate correlation")
+    sd = m.std(axis=0, ddof=1)
+    # Correlate only the non-degenerate columns; constants get identity rows/cols.
+    good = sd > _EPS
+    C = np.eye(N)
+    if good.sum() >= 2:
+        sub = np.corrcoef(m[:, good], rowvar=False)
+        idx = np.where(good)[0]
+        C[np.ix_(idx, idx)] = sub
+    # Guard tiny numerical drift from corrcoef so eigenvalues stay clean.
+    C = np.clip(C, -1.0, 1.0)
+    np.fill_diagonal(C, 1.0)
+    return C
+
+
+def effective_number_of_trials(trial_returns_matrix, method: str = "cluster") -> float:
+    """Effective number of INDEPENDENT trials, N_eff, from the correlation
+    structure of N candidate strategies' per-period return streams.
+
+    Why: the Deflated Sharpe Ratio penalizes the best of N trials by the expected
+    maximum of N iid draws. A 1000-point grid of near-duplicate variants is NOT
+    1000 independent bets - their Sharpe estimates are highly correlated, so the
+    expected max is far smaller and using the raw count N=1000 over-deflates and
+    can bury a genuine edge. Estimate the EFFECTIVE count and pass that to
+    deflated_sharpe_ratio (LdP 2014).
+
+    `trial_returns_matrix`: (T x N) per-period returns, one column per trial.
+
+    method:
+      'spectral' / 'cluster' (default) - participation ratio of the eigenvalue
+          spectrum of the NxN trial correlation matrix:
+              N_eff = (sum_i lambda_i)^2 / sum_i lambda_i^2
+          For a correlation matrix sum_i lambda_i = trace = N, so equivalently
+              N_eff = N^2 / sum_i lambda_i^2 = N^2 / ||C||_F^2
+          (||.||_F = Frobenius norm). This is the spectral / participation-ratio
+          count of effective independent dimensions: it equals N when all trials
+          are mutually orthogonal (C = I, every lambda = 1) and collapses toward 1
+          as trials become perfectly correlated (one large eigenvalue ~ N, the
+          rest ~ 0). Dependency-free and monotone in pairwise correlation. This is
+          the recommended estimator to feed the DSR.
+
+      'threshold' - a conservative LOWER-bound count: cluster trials so that any
+          two with |corr| >= 0.95 land in the same cluster (connected components),
+          and return the number of clusters. Counts blocks of near-identical
+          variants as one. Use as a sanity floor, not as the DSR input. For a
+          tunable threshold use effective_number_of_trials_threshold.
+
+    Returns a float in [1, N].
+    """
+    C = _trial_corr_matrix(trial_returns_matrix)
+    N = C.shape[0]
+    if N == 1:
+        return 1.0
+    if method == "threshold":
+        return float(_threshold_cluster_count(C, corr_threshold=0.95))
+    if method not in ("spectral", "cluster"):
+        raise ValueError(f"unknown method: {method!r} (use 'spectral'/'cluster' or 'threshold')")
+    eig = np.linalg.eigvalsh(C)
+    eig = np.clip(eig, 0.0, None)  # symmetric PSD-ish; kill tiny negative round-off
+    denom = float(np.sum(eig ** 2))
+    if denom <= _EPS:
+        return 1.0
+    n_eff = float(np.sum(eig)) ** 2 / denom
+    # Bound to [1, N]: the participation ratio is mathematically in [1, N].
+    return float(min(max(n_eff, 1.0), N))
+
+
+def _threshold_cluster_count(C: np.ndarray, corr_threshold: float = 0.95) -> int:
+    """Number of clusters when trials with |corr| >= threshold are merged
+    (connected components / single-linkage at the threshold). Conservative
+    lower bound on effective N: blocks of near-duplicates collapse to one."""
+    N = C.shape[0]
+    adj = np.abs(C) >= corr_threshold
+    seen = np.zeros(N, dtype=bool)
+    clusters = 0
+    for i in range(N):
+        if seen[i]:
+            continue
+        clusters += 1
+        stack = [i]
+        seen[i] = True
+        while stack:
+            j = stack.pop()
+            nbrs = np.where(adj[j] & ~seen)[0]
+            for k in nbrs:
+                seen[k] = True
+                stack.append(int(k))
+    return clusters
+
+
+def effective_number_of_trials_threshold(trial_returns_matrix,
+                                         corr_threshold: float = 0.95) -> int:
+    """Conservative lower-bound effective trial count: number of correlation
+    clusters at |corr| >= corr_threshold (see effective_number_of_trials,
+    method='threshold', but with a tunable threshold)."""
+    C = _trial_corr_matrix(trial_returns_matrix)
+    return _threshold_cluster_count(C, corr_threshold=corr_threshold)
+
+
+def trial_sharpe_std_from_matrix(trial_returns_matrix,
+                                 periods_per_year: int = 252,
+                                 annualized: bool = False) -> float:
+    """Cross-trial std of the PER-PERIOD Sharpe estimates, computed directly from
+    the (T x N) trial-returns matrix - the OTHER input the DSR needs and the one
+    users most often get wrong.
+
+    For each trial (column) compute its per-period Sharpe mean/std(ddof=1), then
+    take the std (ddof=1) ACROSS the N trial Sharpes. Degenerate (zero-variance)
+    trials are dropped. Returns a PER-PERIOD figure by default (the units
+    deflated_sharpe_ratio / expected_max_sharpe expect); set annualized=True to
+    multiply by sqrt(ppy)."""
+    m = np.asarray(pd.DataFrame(trial_returns_matrix, dtype="float64").dropna(),
+                   dtype=float)
+    if m.ndim != 2 or m.shape[1] < 2:
+        raise ValueError("need a 2-D (T x N) matrix with N >= 2 trials")
+    mean = m.mean(axis=0)
+    sd = m.std(axis=0, ddof=1)
+    good = sd > _EPS
+    if good.sum() < 2:
+        return float("nan")
+    sr_pp = mean[good] / sd[good]
+    out = float(np.std(sr_pp, ddof=1))
+    return out * math.sqrt(periods_per_year) if annualized else out
+
+
+def deflated_sharpe_ratio(returns, n_trials: float, trial_sharpe_std: float,
                           risk_free: float = 0.0, periods_per_year: int = 252) -> float:
     """PSR measured against the expected maximum Sharpe from `n_trials`
-    independent strategies. `trial_sharpe_std` = std (across trials) of the
-    PER-PERIOD Sharpe estimates. A DSR < 0.95 means the result is plausibly the
-    product of multiple testing. Bailey & Lopez de Prado (2012).
+    strategies. `trial_sharpe_std` = std (across trials) of the PER-PERIOD Sharpe
+    estimates (see trial_sharpe_std_from_matrix). A DSR < 0.95 means the result is
+    plausibly the product of multiple testing. Bailey & Lopez de Prado (2012).
 
-    Note: assumes trials are roughly independent; correlated grid searches have a
-    smaller *effective* n_trials, making this conservative."""
+    `n_trials` may be either:
+      - the raw integer count of configurations tried, OR
+      - a non-integer EFFECTIVE count from effective_number_of_trials(...).
+
+    Prefer the EFFECTIVE count when the trials are a correlated grid: passing the
+    raw count treats near-duplicate variants as independent bets and OVER-deflates
+    (it can bury a real edge). Estimate N_eff from the trial-return correlation
+    matrix and pass it here. The order-statistic expected-max is smooth in N, so a
+    float effective count is valid."""
     sr0 = expected_max_sharpe(trial_sharpe_std, n_trials)
     return probabilistic_sharpe_ratio(returns, benchmark_sr=sr0,
                                       risk_free=risk_free, periods_per_year=periods_per_year)
@@ -372,6 +527,64 @@ if __name__ == "__main__":
     dsr = deflated_sharpe_ratio(g, n_trials=50, trial_sharpe_std=0.5 / math.sqrt(252))
     assert 0.0 <= psr0 <= 1.0 and 0.0 <= dsr <= 1.0
     assert dsr <= psr0 + 1e-9
+
+    # ----------------------------------------------------------------------- #
+    # Effective number of trials (correlated-trial deflation)
+    # ----------------------------------------------------------------------- #
+    T, N = 2000, 40
+
+    # (1) Orthogonal (independent) trials: N_eff ~ N (within sampling noise).
+    indep = rng.normal(0.0, 0.01, size=(T, N))
+    n_eff_indep = effective_number_of_trials(indep)
+    assert 1.0 <= n_eff_indep <= N
+    assert n_eff_indep > 0.8 * N, n_eff_indep   # ~independent => most dims survive
+
+    # (2) Perfectly duplicated trials: one underlying series copied N times
+    #     collapses N_eff toward 1 (a single effective bet).
+    base = rng.normal(0.0, 0.01, size=(T, 1))
+    dup = np.tile(base, (1, N))
+    n_eff_dup = effective_number_of_trials(dup)
+    assert n_eff_dup < 1.05, n_eff_dup
+    # threshold cluster count agrees: all duplicates are one cluster
+    assert effective_number_of_trials_threshold(dup) == 1
+
+    # (3) Monotonicity: injecting MORE common-factor correlation lowers N_eff.
+    #     x_i = sqrt(rho)*F + sqrt(1-rho)*eps_i  => pairwise corr = rho.
+    def make_corr_block(rho, seed):
+        r = np.random.default_rng(seed)
+        F = r.normal(0.0, 1.0, size=(T, 1))
+        eps = r.normal(0.0, 1.0, size=(T, N))
+        return math.sqrt(rho) * F + math.sqrt(1 - rho) * eps
+
+    neffs = [effective_number_of_trials(make_corr_block(rho, 100 + i))
+             for i, rho in enumerate([0.0, 0.3, 0.6, 0.9])]
+    # strictly decreasing in injected correlation (seeded, so deterministic)
+    assert all(neffs[i] > neffs[i + 1] for i in range(len(neffs) - 1)), neffs
+    assert neffs[0] > 0.8 * N and neffs[-1] < 0.25 * N, neffs
+
+    # (4) effective-N fix for over-deflation: with correlated trials, using N_eff
+    #     gives a HIGHER (less punitive) DSR than using the raw count N.
+    corr_trials = make_corr_block(0.8, 7)
+    winner = rng.normal(0.0012, 0.01, 750)            # a genuinely strong stream
+    tsr_std = trial_sharpe_std_from_matrix(corr_trials)   # per-period units
+    n_eff = effective_number_of_trials(corr_trials)
+    assert 1.0 < n_eff < N
+    dsr_raw = deflated_sharpe_ratio(winner, n_trials=N, trial_sharpe_std=tsr_std)
+    dsr_eff = deflated_sharpe_ratio(winner, n_trials=n_eff, trial_sharpe_std=tsr_std)
+    assert 0.0 <= dsr_raw <= 1.0 and 0.0 <= dsr_eff <= 1.0
+    assert dsr_eff >= dsr_raw - 1e-12, (dsr_eff, dsr_raw)  # fewer trials => less deflation
+
+    # (5) trial_sharpe_std_from_matrix: matches a manual per-column computation,
+    #     and annualized == per-period * sqrt(ppy).
+    cols_sr = corr_trials.mean(0) / corr_trials.std(0, ddof=1)
+    assert np.isclose(trial_sharpe_std_from_matrix(corr_trials), np.std(cols_sr, ddof=1))
+    assert np.isclose(trial_sharpe_std_from_matrix(corr_trials, 252, annualized=True),
+                      trial_sharpe_std_from_matrix(corr_trials) * math.sqrt(252))
+
+    # (6) expected_max_sharpe accepts a float effective count and is monotone:
+    #     more trials => larger expected max under the null.
+    assert expected_max_sharpe(0.5, 1) == 0.0
+    assert expected_max_sharpe(0.5, 100) > expected_max_sharpe(0.5, 10.5) > 0
 
     # VaR/CVaR sign convention: losses negative; CVaR no greater than VaR
     var = value_at_risk(g, 0.05)

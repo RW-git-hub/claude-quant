@@ -32,7 +32,11 @@ n_trials:    "count every variant tested; deflate Sharpe accordingly"
 
 **Why it matters.** With enough trials, some random strategy clears any fixed bar. Track `n_trials` and apply the Deflated Sharpe Ratio (Bailey & López de Prado) or at minimum a Bonferroni-style haircut. A backtest is a hypothesis test with a multiple-comparisons problem.
 
-**Decision rule.** A strategy graduates only on *out-of-sample, net-of-cost* numbers that you committed to in advance. In-sample fit and gross returns are for debugging, never for go/no-go.
+**Don't hand-wire the sweep — that's where the trial count gets under-counted and the OOS gets peeked.** Run the parameter grid through `templates/validation.py`'s `walk_forward_evaluate(strategy_fn, param_grid, data, train=…, test=…, label_horizon=…, embargo_pct=…)`: it marches a purged+embargoed expanding/rolling window over the data, calls your `strategy_fn(train_idx, test_idx, params) -> oos_return_series` for *every* grid point, and returns the (config × time) OOS performance matrix plus an honest `n_trials = len(param_grid)` (survivors **and** failures, not just the variants you liked). The harness owns the purge/embargo and the trial count so neither can be forgotten. Then `summarize_search(result)` returns the one-line verdict — `{best_config, oos_sharpe, dsr, pbo, n_trials, n_eff, performance_degradation}` — wiring the matrix into the Deflated Sharpe (`metrics.deflated_sharpe_ratio`) and the PBO/CSCV overfitting probability (`overfitting.pbo_cscv`). This is the canonical sweep entry point; see §8.
+
+**Effective vs raw trial count.** Grid points are not independent — neighbouring parameters produce highly correlated return streams — so the relevant multiple-testing budget is the *effective* number of trials, not the grid size. `summarize_search` deflates by `n_eff = effective_n_trials(perf_matrix)` (the participation ratio `(Σλ)²/Σλ²` of the config-correlation eigenvalues: `= N` when configs are independent, `→ 1` as they collapse onto one bet). Report both `n_trials` (the honest raw count you ran) and `n_eff` (what you deflated by).
+
+**Decision rule.** A strategy graduates only on *out-of-sample, net-of-cost* numbers that you committed to in advance. In-sample fit and gross returns are for debugging, never for go/no-go. Concretely: `dsr > 0.95` (the deflated Sharpe survives the effective trial count) **and** `pbo < 0.5` (selecting the in-sample best is not anti-predictive out-of-sample) are necessary gates, not nice-to-haves.
 
 ---
 
@@ -289,7 +293,40 @@ def log_run(config, metrics, data_df):
         json.dump(rec, f, indent=2, default=str)
 ```
 
-For model-based signals, validate with **purged, embargoed time-series CV** (López de Prado): remove training samples whose label windows overlap the test window (purge), and drop a further block of training samples immediately *after* the test window (embargo) to defend against serial correlation leaking across the boundary. Plain `KFold`/shuffle leaks across time. `sklearn.model_selection.TimeSeriesSplit` enforces train-before-test ordering but does **not** purge or embargo — you must add those yourself when labels span multiple bars.
+For model-based signals, validate with **purged, embargoed time-series CV** (López de Prado): remove training samples whose label windows overlap the test window (purge), and drop a further block of training samples immediately *after* the test window (embargo) to defend against serial correlation leaking across the boundary. Plain `KFold`/shuffle leaks across time. `sklearn.model_selection.TimeSeriesSplit` enforces train-before-test ordering but does **not** purge or embargo — you must add those yourself when labels span multiple bars. `templates/validation.py` ships `PurgedKFold` and `CombinatorialPurgedKFold` (CPCV) that do both, with the same `.split` API as sklearn but no sklearn dependency.
+
+### The canonical sweep harness: `walk_forward_evaluate` → `summarize_search`
+
+The splitters give you leak-free folds, the Deflated Sharpe (`metrics.py`) gives you a haircut for trials, and PBO/CSCV (`overfitting.py`) tells you whether the *ranking* generalizes — but those are primitives. `templates/validation.py` provides the harness that runs the actual sweep through them and hands you one verdict, operationalizing Iron Laws 4 (OOS sacred) and 5 (deflated, honest stats) end-to-end:
+
+```python
+from validation import walk_forward_evaluate, summarize_search
+
+# strategy_fn receives integer positional indices into `data` for the purged
+# train rows and the test rows, plus this grid point's params. It returns the
+# per-period OOS returns realized on the TEST rows (already lagged/costed by you).
+def strategy_fn(train_idx, test_idx, params):
+    model = fit(X[train_idx], y[train_idx], **params)     # train only on past
+    signal = model.predict(X[test_idx])
+    return (np.sign(signal) * fwd_ret[test_idx]            # fwd_ret is next-bar => no look-ahead
+            - turnover(signal) * cost_per_side)            # cost BEFORE Sharpe (Iron Law 3)
+
+grid = [{"lookback": L, "thresh": t} for L in (20, 60, 120) for t in (0.5, 1.0, 1.5)]
+res  = walk_forward_evaluate(strategy_fn, grid, data,
+                             train=750, test=125,          # ~3y train, ~6m test
+                             anchored=False,               # rolling window; True = expanding
+                             label_horizon=5, embargo_pct=0.01)
+verdict = summarize_search(res)
+# -> {best_config, oos_sharpe, dsr, pbo, n_trials=9, n_eff, performance_degradation}
+```
+
+What the harness guarantees so you can't get it wrong:
+- **No look-ahead across the fold.** Every `train_idx` lies strictly before its `test_idx`, and the last `label_horizon` train bars before the test block are purged (plus an embargo buffer). A test index appearing in its own train fold raises immediately — the purge/embargo assertion runs on every call.
+- **Honest trial counting.** `n_trials == len(param_grid)`: every config you ran is counted, survivors and failures alike. There is no path that silently drops the variants that "didn't work."
+- **No OOS peeking.** `strategy_fn` only ever sees `train_idx` for fitting; the test rows are passed solely to realize returns. You cannot accidentally normalize, select features, or tune on the test window because you never receive it as training data.
+- **One deflated verdict.** `summarize_search` ranks configs by per-period OOS Sharpe, deflates the winner by `n_eff` (correlation-aware effective trials) via the Deflated Sharpe, and runs the full OOS matrix through CSCV for the PBO and the IS→OOS degradation diagnostics. Read `dsr` and `pbo` together: DSR deflates the *headline number* for the trial budget; PBO asks whether the *selection rule* generalizes. They fail in different ways — a strategy can have a respectable DSR yet a PBO > 0.5 (the winner is a different config each split), or a clean PBO yet a DSR < 0.95 (real but too small to clear the trial count). (`performance_degradation` is an optional enrichment populated when the `overfitting.py` sibling is importable — the production layout; in a bare standalone `validation.py` it is `None` while `dsr`/`pbo` still compute from in-file fallbacks.)
+
+Use CPCV instead of the single walk-forward path when you want the full *distribution* of OOS outcomes (many backtest paths) rather than one chronological path; collect each path's per-period returns into the columns of a performance matrix and pass it straight to `summarize_search` / `overfitting.pbo_cscv`.
 
 ---
 
@@ -352,4 +389,4 @@ print(f"AnnRet {ann_ret:.2%}  AnnVol {ann_vol:.2%}  Sharpe {sharpe:.2f} "
 4. **Costs omitted** → momentum's turnover is moderate; mean-reversion variants will look spectacular gross and die net. Always sweep cost.
 5. **`mom` using `.shift(0)`** or centered windows → future prices in the signal. Confirm every term in the signal references only `px.shift(k>=1)`.
 
-**Sanity gates before believing it:** Sharpe in a plausible range (a daily L/S equity factor at net Sharpe > 2.5 is suspicious); positive, stable IC; graceful degradation under the cost sweep; results survive purged/embargoed CV; and the numbers reproduce from the logged config + data hash.
+**Sanity gates before believing it:** Sharpe in a plausible range (a daily L/S equity factor at net Sharpe > 2.5 is suspicious); positive, stable IC; graceful degradation under the cost sweep; results survive purged/embargoed CV; and the numbers reproduce from the logged config + data hash. For a multi-config sweep, run it through `walk_forward_evaluate` / `summarize_search` (§1, §8) and graduate only on `dsr > 0.95` with `pbo < 0.5`.

@@ -72,7 +72,7 @@ def psr(returns, sr_benchmark=0.0):
     return norm.cdf((sr - sr_benchmark) * np.sqrt(n - 1) / denom)
 ```
 
-Negative skew and fat tails *lower* PSR — the standard Sharpe SE understates uncertainty for strategies that look great until they blow up (carry, short vol, selling tails).
+Negative skew and fat tails *lower* PSR — the standard Sharpe SE understates uncertainty for strategies that look great until they blow up (carry, short vol, selling tails). (For a normal series `γ3=0, γ4=3`, the denominator collapses to `sqrt(1 + 0.5·SR_hat^2)` and PSR(0) becomes `Φ(SR_hat·sqrt(n-1)/sqrt(1+0.5·SR_hat^2))` — almost exactly the Lo t-stat of §3, off only by `sqrt(n-1)` vs `sqrt(n)`. The companion `templates/metrics.py` uses the biased/MLE moments — `np.mean(z^k)` with population `std(ddof=0)` — which is López de Prado's own PSR convention; the difference from scipy's `bias=False` moments is negligible at backtest sample sizes.)
 
 ### 1.4 Deflated Sharpe Ratio (DSR)
 
@@ -82,7 +82,7 @@ Expected maximum of N iid standard-normal Sharpe estimates:
 ```
 SR*  =  sqrt(Var(SR_trials)) * [ (1-γ)·Φ^{-1}(1 - 1/N)  +  γ·Φ^{-1}(1 - 1/(N·e)) ]
 ```
-where `γ ≈ 0.5772` (Euler-Mascheroni), `Var(SR_trials)` is the variance of the (per-period) Sharpe ratios across your N trials, and `Φ^{-1}` is the normal quantile. Then `DSR = PSR(SR*)`. Note `SR*` and the `SR_hat` inside `psr` must be in the **same frequency** (both per-period here).
+where `γ ≈ 0.5772` (Euler-Mascheroni), `Var(SR_trials)` is the variance of the (per-period) Sharpe ratios across your N trials, and `Φ^{-1}` is the normal quantile. Then `DSR = PSR(SR*)`. Note `SR*` and the `SR_hat` inside `psr` must be in the **same frequency** (both per-period here). (This Gumbel-style order-statistic approximation is accurate to a few percent versus simulation and tightens as N grows — verified ~2.5% relative error at N=10, ~0.6% at N=200.)
 
 ```python
 def expected_max_sharpe(var_sr_trials, n_trials):
@@ -98,6 +98,52 @@ def deflated_sharpe(best_returns, var_sr_trials, n_trials):
 ```
 
 **Detect/fix.** If you grid-searched, you MUST report DSR, not raw Sharpe. A DSR below ~0.95 means the "winner" is not distinguishable from the luckiest of N noise draws. Track `n_trials` honestly — it includes abandoned variants, not just the final grid.
+
+#### 1.4.1 Effective number of trials — estimate N_eff BEFORE deflating
+
+The formula above assumes the N trials are **independent**. A grid search almost never is: 1000 neighbouring parameter combinations produce 1000 *highly correlated* Sharpe estimates. The expected maximum of N correlated draws is much smaller than the expected maximum of N independent draws, so plugging the raw count `N = 1000` into `SR*` **over-deflates** — it treats a tight cluster of near-duplicate variants as 1000 independent bets and can bury a genuine edge under the noise floor. (This is why passing the raw count is "conservative but reasonable": it errs toward rejecting, never toward false discovery.) Current DSR practice (López de Prado 2014/2018, reaffirmed in production DSR pipelines) is to first estimate the **effective number of independent trials** from the *correlation structure of the trials*, then deflate by `N_eff`, not by the config count.
+
+**The rule: estimate `N_eff` from the trial-return correlation matrix and pass that to the DSR — never count configurations.** Two near-identical grid points are one effective trial; ten genuinely different signals on different data are ten.
+
+**Spectral / participation-ratio estimator (dependency-free, recommended).** Build the `N×N` correlation matrix `C` of the per-trial return streams (one column per config, aligned in time), take its eigenvalues `λ_1…λ_N`, and compute the participation ratio of the spectrum:
+```
+N_eff = (Σ_i λ_i)^2 / Σ_i λ_i^2
+```
+Because `C` is a correlation matrix, `Σ_i λ_i = trace(C) = N`, so equivalently
+```
+N_eff = N^2 / Σ_i λ_i^2 = N^2 / ‖C‖_F^2
+```
+(`‖·‖_F` = Frobenius norm = `sqrt(Σ_ij C_ij^2)`). This is the spectral count of effective independent dimensions:
+- All trials orthogonal → `C = I`, every `λ_i = 1` → `N_eff = N` (no deflation relief).
+- All trials identical → one eigenvalue `≈ N`, the rest `≈ 0` → `N_eff → 1` (one effective bet).
+- `N_eff` is **monotone decreasing** in pairwise correlation and always lies in `[1, N]`.
+- Equicorrelated sanity check (all pairwise corr = ρ): one eigenvalue `1+(N-1)ρ`, the rest `1-ρ`, so `N_eff = N^2 / [(1+(N-1)ρ)^2 + (N-1)(1-ρ)^2]` — e.g. N=15, ρ=0.5 gives `N_eff ≈ 3.3`. Matches the empirical participation ratio.
+
+```python
+def effective_number_of_trials(trial_returns_matrix):
+    """N_eff from the (T x N) matrix of per-trial return streams (one column per
+    config). Participation ratio of the trial-correlation eigenvalue spectrum."""
+    m = np.asarray(trial_returns_matrix, dtype=float)
+    C = np.corrcoef(m, rowvar=False)               # NxN trial correlation matrix
+    eig = np.clip(np.linalg.eigvalsh(C), 0.0, None) # PSD; kill round-off negatives
+    n_eff = eig.sum() ** 2 / (eig ** 2).sum()       # == N^2 / ||C||_F^2 (trace=N)
+    return float(min(max(n_eff, 1.0), C.shape[0]))  # mathematically in [1, N]
+```
+
+**Conservative lower bound (correlation-threshold clusters).** As a sanity floor, count the number of correlation clusters at a high threshold (e.g. merge any two trials with `|corr| ≥ 0.95` into one cluster via connected components, then count clusters). This collapses blocks of near-duplicates to one and gives an *integer* lower bound on `N_eff`. Use it to bracket the spectral estimate, not as the DSR input — single-linkage at a hard threshold can chain unrelated trials and is sensitive to the cutoff.
+
+**Getting the OTHER DSR input right.** `Var(SR_trials)` is the **cross-trial** variance of the **per-period** Sharpe estimates — the spread of each config's own Sharpe across the N configs, not the sampling SE of a single Sharpe (a common confusion). Compute each column's per-period `mean/std(ddof=1)`, then take the variance (or std) across columns. Keep it per-period to match the per-period `SR_hat` inside `psr`/`expected_max_sharpe`; multiply the std by `sqrt(PPY)` only if you deliberately work in annualized units everywhere.
+
+> Self-tested, dependency-free implementations live in `templates/metrics.py`:
+> `effective_number_of_trials(trial_returns_matrix, method='cluster')` (spectral participation ratio; `method='threshold'` for the cluster floor),
+> `effective_number_of_trials_threshold(..., corr_threshold=0.95)`,
+> `trial_sharpe_std_from_matrix(...)` (the cross-trial per-period Sharpe std), and
+> `deflated_sharpe_ratio(returns, n_trials, trial_sharpe_std, ...)` — which now accepts either a raw integer count **or** a non-integer effective count (the order-statistic expected-max is smooth in N). The recommended call is:
+> ```python
+> n_eff = effective_number_of_trials(trial_returns_matrix)        # estimate FIRST
+> tsr   = trial_sharpe_std_from_matrix(trial_returns_matrix)      # per-period std
+> dsr   = deflated_sharpe_ratio(best_returns, n_eff, tsr)         # then deflate
+> ```
 
 ### 1.5 Probability of Backtest Overfitting (PBO) via CSCV
 
@@ -133,13 +179,15 @@ def pbo_cscv(perf, n_blocks=16):
     return (logits <= 0).mean()                          # PBO = P(rank below median)
 ```
 
+Note: the `(T, N)` performance matrix you build for PBO/CSCV is exactly the `trial_returns_matrix` you feed `effective_number_of_trials` (§1.4.1) — compute both from the same per-config return panel. The PBO estimate is only unbiased asymptotically (in `T`, in the number of configs, and in `C(S, S/2)` partitions); with a handful of configs expect noisy PBO even on pure noise — read it as a coarse over/under-0.5 flag, not a precise probability.
+
 ### 1.6 Minimum backtest length (MinBTL)
 
 Bailey et al.: the backtest length needed so that an IS *annualized* Sharpe of `SR_annual` is not expected purely from selecting the best of N trials:
 ```
 MinBTL (years) ≈ ( (1 - γ)·Φ^{-1}(1 - 1/N) + γ·Φ^{-1}(1 - 1/(N·e)) )^2 / SR_annual^2
 ```
-Intuition: the more configs you try (N), the longer the history you need to trust a given Sharpe. With N=100 and target SR=1, you need ~6 years just to clear the noise floor.
+Intuition: the more configs you try (N), the longer the history you need to trust a given Sharpe. With N=100 and target SR=1, you need ~6 years just to clear the noise floor. (Use the **effective** N from §1.4.1 here too — correlated configs are fewer effective trials and thus need less history than the raw count implies.)
 
 ---
 
@@ -269,7 +317,7 @@ IR is Sharpe with the benchmark as the "risk-free" leg. Use for relative/long-sh
 ```
 turnover_t = sum_i |w_{i,t} - w_{i,t-1}^{drift}|   # one-sided, per rebalance
 ```
-where `w_{i,t-1}^{drift}` is the prior weight after price drift (NOT the prior target weight — using the target overstates turnover). This one-sided definition counts the total absolute weight change; some shops report half of this (the round-trip-normalized version). State which. Annualize by summing per-rebalance turnover over a year. Drives transaction-cost drag: `cost ≈ turnover * cost_per_unit`.
+where `w_{i,t-1}^{drift}` is the prior weight after price drift (NOT the prior target weight — using the target overstates turnover). This one-sided definition counts the total absolute weight change; some shops report half of this (the round-trip-normalized version). State which. Annualize by summing per-rebalance turnover over a year. Drives transaction-cost drag: `cost ≈ turnover * cost_per_unit`. (`templates/metrics.py:turnover` reports the **half** version — `0.5·Σ|Δw|`, averaged over rebalances — so a full one-name-to-another swap in a fully-invested book reads as 100%; pick a convention and apply it consistently end-to-end.)
 
 ### t-stat of the Sharpe ratio
 
@@ -373,6 +421,8 @@ def reality_check_pvalue(D, mean_block=20, B=2000):
     return (boot_max >= V).mean()
 ```
 
+RC/SPA and the DSR attack the same disease (selecting the best of many) from two angles: RC/SPA bootstrap the performance gap to a benchmark; the DSR (§1.4) analytically deflates by the expected max of `N_eff` trials. They are complementary — report both when you have selected a winner from a large search.
+
 ---
 
 ## 5. Time-series properties
@@ -424,9 +474,10 @@ r = np.asarray(r, dtype=float)
 sigma2 = np.empty(len(r)); sigma2[0] = r.var(ddof=1)
 lam = 0.94
 for t in range(1, len(r)):
-    sigma2[t] = lam * sigma2[t - 1] + (1 - lam) * r[t - 1] ** 2
+    sigma2[t] = lam * sigma2[t - 1] + (1 - lam) * r[t - 1] ** 2  # uses r[t-1]: causal
 ewma_vol = np.sqrt(sigma2)
 ```
+(`σ²_t` depends only on `r²_{t-1}` and `σ²_{t-1}` — known at the start of bar `t`, so it is a one-sided/causal estimate with no look-ahead; this is the variance you may condition a position on at `t`.)
 
 ### 6.2 VaR and CVaR
 
@@ -536,7 +587,7 @@ def ic_series(factor_df, fwd_ret_df):
     return pd.Series(ics)
 ```
 
-**Detect/fix.** The classic look-ahead bug: correlating factor_t with return_t (same period) instead of forward returns. The forward-return panel must be shifted so that `fwd_ret.loc[t]` covers `t→t+h` and uses only prices after t. Concretely, `fwd_ret = close.pct_change(h).shift(-h)` (then the last `h` rows are NaN and dropped) — never reach back to a price at or before t.
+**Detect/fix.** The classic look-ahead bug: correlating factor_t with return_t (same period) instead of forward returns. The forward-return panel must be shifted so that `fwd_ret.loc[t]` covers `t→t+h` and uses only prices after t. Concretely, `fwd_ret = close.pct_change(h).shift(-h)` makes `fwd_ret.loc[t] = close_{t+h}/close_t - 1` (uses only prices strictly after t; the last `h` rows are NaN and dropped) — never reach back to a price at or before t.
 
 ### 8.2 IC decay
 
@@ -582,14 +633,15 @@ Published/popular factors decay (McLean-Pontiff: ~half the premium disappears po
 
 1. **Same-bar execution / look-ahead.** PnL uses `position * return_t` not `position.shift(1) * return_t`. → Always lag positions; audit every signal for information timing.
 2. **Multiple-testing inflation.** Reporting the best of N configs as the Sharpe. → DSR/PSR, track honest `n_trials`, OOS via CPCV, report PBO.
-3. **Shuffled/plain CV on time series.** → Purged + embargoed K-fold / CPCV; never `shuffle=True`.
-4. **Survivorship / delisting bias.** Universe excludes dead tickers. → Use point-in-time, survivorship-free data; include delistings at the delist return.
-5. **Wrong annualization.** Mixing 252/365, annualizing per-period Sharpe by anything but √PPY, ignoring autocorrelation. → Fix PPY explicitly; use Lo (2002) when autocorrelated.
-6. **Ignoring costs/slippage/capacity.** Gross Sharpe ≫ net. → Subtract realistic costs = turnover × spread/impact; check capacity at target AUM.
-7. **Overfitting parameters.** Tuning on the full sample. → Walk-forward, hold out a true test set, prefer fewer parameters; report DSR.
-8. **Correlation mistaken for cointegration** in pairs. → Test cointegration (Engle-Granger/Johansen); re-estimate live.
-9. **Gaussian VaR on fat-tailed P&L.** → Historical/CVaR or Student-t/Cornish-Fisher; stress test.
-10. **iid bootstrap on dependent returns.** → Block/stationary bootstrap.
-11. **Ignoring non-normality in significance.** Bare Sharpe with negative skew. → PSR, inspect skew/kurtosis and tails.
-12. **Reusing the test set.** Each peek leaks. → One-shot test; tune only on validation.
-13. **Positional indexing on pandas Series.** `r[t-1]` is label-based and silently wrong. → `np.asarray(r)` before integer-positional loops.
+3. **Deflating by the raw config count.** A correlated grid is not N independent bets — using the raw N over-deflates the DSR and can bury a real edge. → Estimate the **effective** N from the trial-return correlation matrix (participation ratio, §1.4.1) and deflate by `N_eff`.
+4. **Shuffled/plain CV on time series.** → Purged + embargoed K-fold / CPCV; never `shuffle=True`.
+5. **Survivorship / delisting bias.** Universe excludes dead tickers. → Use point-in-time, survivorship-free data; include delistings at the delist return.
+6. **Wrong annualization.** Mixing 252/365, annualizing per-period Sharpe by anything but √PPY, ignoring autocorrelation. → Fix PPY explicitly; use Lo (2002) when autocorrelated.
+7. **Ignoring costs/slippage/capacity.** Gross Sharpe ≫ net. → Subtract realistic costs = turnover × spread/impact; check capacity at target AUM.
+8. **Overfitting parameters.** Tuning on the full sample. → Walk-forward, hold out a true test set, prefer fewer parameters; report DSR.
+9. **Correlation mistaken for cointegration** in pairs. → Test cointegration (Engle-Granger/Johansen); re-estimate live.
+10. **Gaussian VaR on fat-tailed P&L.** → Historical/CVaR or Student-t/Cornish-Fisher; stress test.
+11. **iid bootstrap on dependent returns.** → Block/stationary bootstrap.
+12. **Ignoring non-normality in significance.** Bare Sharpe with negative skew. → PSR, inspect skew/kurtosis and tails.
+13. **Reusing the test set.** Each peek leaks. → One-shot test; tune only on validation.
+14. **Positional indexing on pandas Series.** `r[t-1]` is label-based and silently wrong. → `np.asarray(r)` before integer-positional loops.

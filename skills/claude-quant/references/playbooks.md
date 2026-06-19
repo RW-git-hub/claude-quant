@@ -173,12 +173,15 @@ This is the gate between research and capital. Be adversarial.
    purged + embargoed; `n_paths()` reports how many OOS paths you get). Plain walk-forward via
    `validation.PurgedKFold` at minimum. The OOS period from research stays sacred — do not re-tune
    on it here.
-2. **Overfitting probability (PBO).** CPCV gives you the path-by-path performance distribution
-   needed to estimate the Probability of Backtest Overfitting (is the in-sample-best config a coin
-   flip OOS?). NOTE: there is **no shipped `pbo` function** — compute the rank statistic yourself
-   from the per-path performances produced by `CombinatorialPurgedKFold` (the template's docstring
-   describes feeding this distribution into PBO/CSCV). High PBO → reject regardless of headline
-   Sharpe. See `references/robustness.md` and `references/stats-risk.md`.
+2. **Overfitting probability (PBO).** Assemble the per-period performance of every config you tried
+   into a `(T × N)` matrix and call `overfitting.pbo_cscv(perf, n_blocks=16)` — the **shipped**
+   CSCV implementation (Bailey-Borwein-LdP-Zhu). It returns `pbo` (is the in-sample-best config a
+   coin flip OOS?), the per-split logit distribution, and `median_logit`. Build the matrix with
+   `overfitting.build_perf_matrix({name: returns})`, or feed the multi-path OOS returns from
+   `validation.CombinatorialPurgedKFold` as columns. Corroborate with
+   `overfitting.performance_degradation(perf)` (OOS-on-IS slope and P[OOS loss | selected]). Feed
+   the **full** search, not just survivors. High PBO (>0.5) → reject regardless of headline Sharpe.
+   See `references/robustness.md` §6 and `references/stats-risk.md` §1.5.
 3. **Deflated Sharpe.** `metrics.deflated_sharpe_ratio(returns, n_trials, trial_sharpe_std)` using
    the **true** number of configurations tried across the whole project (and the cross-trial std
    of per-period Sharpe), plus `metrics.probabilistic_sharpe_ratio` against a benchmark Sharpe.
@@ -367,7 +370,7 @@ playbook above:
 | "I have an idea / research this signal" | 1 | `factor_research.py`, `backtest_skeleton.py`, `metrics.py` |
 | "Is this backtest legit / audit it" | 2 | `validation.py`, `data_loader.py`, `costs.py` |
 | "Does this factor have alpha" | 3 | `factor_research.py`, `robustness.py`, `metrics.py` |
-| "Is it ready / is it overfit" | 4 | `validation.py`, `robustness.py`, `metrics.py`, `risk.py` |
+| "Is it ready / is it overfit" | 4 | `validation.py`, `robustness.py`, `overfitting.py`, `metrics.py`, `risk.py` |
 | "Build a PIT data pipeline" | 5 | `data_loader.py` |
 | "Size / risk-manage the book" | 6 | `regime.py`, `portfolio.py`, `pretrade_checks.py`, `risk.py` |
 | "Evaluate this bet / odds" | 7 | `betting_markets.py` |

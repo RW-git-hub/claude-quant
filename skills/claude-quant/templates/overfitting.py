@@ -272,6 +272,14 @@ def performance_degradation(perf, n_blocks: int = 16) -> dict:
          in-sample], i.e. how often the config you would have traded actually lost
          money out-of-sample.
 
+    NOTE on the slope: across CSCV's symmetric splits, IS and OOS partition the
+    SAME fixed full sample, so a split that hands the selected config a lucky-high
+    IS Sharpe tends to leave a lower OOS Sharpe in the complement (and vice
+    versa). This induces a mechanical NEGATIVE component in the selected-pair
+    slope even when a genuine edge exists -- so read `slope` as a directional flag
+    (clearly positive is reassuring), not a calibrated effect size, and lean on
+    `prob_oos_loss` / `mean_oos_selected` and `pbo_cscv` for the verdict.
+
     Parameters
     ----------
     perf : (T x N) array-like of per-period performance, one column per config.
@@ -281,8 +289,7 @@ def performance_degradation(perf, n_blocks: int = 16) -> dict:
     -------
     dict with:
         slope            : OLS slope of OOS Sharpe on IS Sharpe (selected config,
-                           per split). <= 0 => IS optimization is uninformative
-                           or harmful OOS.
+                           per split). See the NOTE above on interpreting it.
         intercept        : OLS intercept (the no-IS-info baseline OOS Sharpe).
         prob_oos_loss    : P[selected config's OOS Sharpe < 0]. High => the
                            winner frequently loses money out of sample.
@@ -345,19 +352,29 @@ def performance_degradation(perf, n_blocks: int = 16) -> dict:
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
-
-    # ---- (1) PURE NOISE: many configs, none with a true edge -------------- #
-    # CSCV should report a HIGH PBO: the in-sample winner is a noise artifact and
-    # generalizes no better than the median out of sample.
     T, N = 1200, 40
+
+    # ---- (1) OVERFIT NULL: configs with NO persistent edge ---------------- #
+    # The honest null for backtest overfitting is "no config has a real edge."
+    # Full-sample-demeaning each column forces its true mean to exactly 0, so any
+    # in-sample lead is a pure in-sample fluke with nothing to bank OOS. CSCV must
+    # then report a HIGH PBO: selecting the IS-best is anti-predictive OOS.
+    # (NOTE: raw i.i.d. noise is a SOFTER, AMBIGUOUS null -- each column's nonzero
+    #  full-sample mean is a hair of persistent "edge" drawn from N(0, sigma^2/T),
+    #  so its PBO is NOT reliably above or below 0.5: across seeds it hovers near
+    #  0.5 with wide scatter (~0.3-0.7). That is exactly why we use the DEMEANED
+    #  null here -- forcing every column's true mean to 0 makes the overfitting
+    #  null deterministic and unambiguous, so PBO->1 is a clean, repeatable test.)
     noise = rng.normal(0.0, 0.01, size=(T, N))
-    res_noise = pbo_cscv(noise, n_blocks=14)
-    assert 0.0 <= res_noise["pbo"] <= 1.0
-    assert res_noise["pbo"] > 0.5, (
-        f"pure-noise selection should be overfit (PBO>0.5), got {res_noise['pbo']:.3f}"
+    overfit = noise - noise.mean(axis=0, keepdims=True)   # true mean == 0 per config
+    res_overfit = pbo_cscv(overfit, n_blocks=14)
+    assert 0.0 <= res_overfit["pbo"] <= 1.0
+    assert res_overfit["pbo"] > 0.5, (
+        f"no-persistent-edge selection should be overfit (PBO>0.5), "
+        f"got {res_overfit['pbo']:.3f}"
     )
-    assert res_noise["median_logit"] <= 0.0, (
-        f"noise median logit should be <= 0, got {res_noise['median_logit']:.3f}"
+    assert res_overfit["median_logit"] <= 0.0, (
+        f"overfit-null median logit should be <= 0, got {res_overfit['median_logit']:.3f}"
     )
 
     # ---- (2) ONE GENUINE EDGE: a single config has a constant real drift --- #
@@ -369,12 +386,12 @@ if __name__ == "__main__":
     assert res_edge["pbo"] < 0.1, (
         f"a genuine constant edge should NOT be overfit (PBO low), got {res_edge['pbo']:.3f}"
     )
-    assert res_edge["pbo"] < res_noise["pbo"], "edge PBO must be below noise PBO"
+    assert res_edge["pbo"] < res_overfit["pbo"], "edge PBO must be below overfit-null PBO"
     assert res_edge["median_logit"] > 0.0, "genuine-edge median logit should be > 0"
 
     # ---- (3) partition count == C(S, S/2), and determinism ---------------- #
     assert res_edge["n_splits"] == comb(14, 7) == 3432
-    res16 = pbo_cscv(noise, n_blocks=16)
+    res16 = pbo_cscv(overfit, n_blocks=16)
     assert res16["n_splits"] == comb(16, 8) == 12870
     # determinism: identical inputs -> identical PBO and identical logit vector.
     res_edge_again = pbo_cscv(edge, n_blocks=14)
@@ -382,31 +399,36 @@ if __name__ == "__main__":
     assert np.array_equal(res_edge_again["logits"], res_edge["logits"])
 
     # logits are always finite (plotting-position omega is strictly in (0,1)).
-    assert np.all(np.isfinite(res_noise["logits"]))
+    assert np.all(np.isfinite(res_overfit["logits"]))
     assert np.all(np.isfinite(res_edge["logits"]))
 
-    # ---- (4) performance_degradation: noise vs genuine edge --------------- #
-    deg_noise = performance_degradation(noise, n_blocks=14)
+    # ---- (4) performance_degradation: overfit null vs genuine edge -------- #
+    deg_overfit = performance_degradation(overfit, n_blocks=14)
     deg_edge = performance_degradation(edge, n_blocks=14)
-    # Genuine edge: selected config makes money OOS almost always; noise: it loses
-    # roughly half the time (no real OOS edge to bank).
+    # Genuine edge: selected config makes money OOS almost always; overfit null:
+    # IS-best loses money OOS much of the time (no real OOS edge to bank).
     assert deg_edge["prob_oos_loss"] < 0.1, (
         f"genuine edge should rarely lose OOS, got {deg_edge['prob_oos_loss']:.3f}"
     )
-    assert deg_noise["prob_oos_loss"] > 0.3, (
-        f"noise should lose OOS often, got {deg_noise['prob_oos_loss']:.3f}"
+    assert deg_overfit["prob_oos_loss"] > 0.5, (
+        f"overfit null should lose OOS often, got {deg_overfit['prob_oos_loss']:.3f}"
     )
-    # Genuine edge: OOS Sharpe of the selected config is solidly positive on
-    # average; for pure noise it hovers near zero.
+    # IS->OOS degradation: a genuine edge keeps a clearly positive OOS Sharpe,
+    # while the overfit null's selected config degrades to a negative OOS Sharpe
+    # on average (the IS lead was pure in-sample noise).
     assert deg_edge["mean_oos_selected"] > 0.05
-    assert abs(deg_noise["mean_oos_selected"]) < deg_edge["mean_oos_selected"]
-    for d in (deg_noise, deg_edge):
+    assert deg_overfit["mean_oos_selected"] < 0.0, (
+        f"overfit-null IS-best should degrade to a negative OOS Sharpe on average, "
+        f"got {deg_overfit['mean_oos_selected']:.3f}"
+    )
+    assert deg_overfit["mean_oos_selected"] < deg_edge["mean_oos_selected"]
+    for d in (deg_overfit, deg_edge):
         assert d["n_splits"] == comb(14, 7)
 
     # ---- (5) build_perf_matrix: pandas alignment + array path ------------- #
     idx = pd.date_range("2020-01-01", periods=10, freq="B")
     sa = pd.Series(np.arange(10, dtype=float), index=idx)
-    sb = pd.Series(np.arange(10, dtype=float) * 2, index=idx[2:].append(idx[:0]))
+    sb = pd.Series(np.arange(8, dtype=float) * 2, index=idx[2:])
     # sb is missing the first 2 dates -> inner overlap should be 8 rows.
     perf_mat, names = build_perf_matrix({"a": sa, "b": sb})
     assert names == ["a", "b"]
@@ -426,13 +448,13 @@ if __name__ == "__main__":
     ):
         try:
             bad_call()
-        except (ValueError, Exception):
+        except ValueError:
             pass
         else:
-            raise AssertionError("expected a guard to reject invalid input")
+            raise AssertionError("expected a ValueError guard to reject invalid input")
 
     print(
         f"overfitting.py self-tests passed "
-        f"(noise PBO={res_noise['pbo']:.2f}, edge PBO={res_edge['pbo']:.2f}, "
+        f"(overfit-null PBO={res_overfit['pbo']:.2f}, edge PBO={res_edge['pbo']:.2f}, "
         f"splits={res_edge['n_splits']})."
     )

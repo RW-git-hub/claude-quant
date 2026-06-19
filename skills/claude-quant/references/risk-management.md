@@ -6,7 +6,7 @@ Conventions used throughout:
 - Returns are simple returns; PnL series are strategy returns (post-cost, positions lagged: `pnl_t = pos.shift(1) * ret_t`).
 - **Sign convention**: VaR and ES are reported as a *return* (a loss is negative). VaR at 99% might be `-0.031` meaning "we expect to lose 3.1% or more on 1 day in 100." Many vendors report VaR as a positive magnitude; pick one convention and enforce it everywhere or you *will* flip a sign in a limit check.
 - `z_alpha` denotes the standard-normal quantile at probability `alpha`. For a 99% VaR (1% left tail), `alpha = 0.01`, `z_0.01 = -2.326`.
-- Historical and Gaussian VaR/CVaR already live in `templates/metrics.py` as `value_at_risk(returns, level=0.05, method="historical"|"gaussian")` and `conditional_value_at_risk(returns, level=0.05, method=...)` — note the parameter is named `level` (the lower-tail probability), not `alpha`, and a `"gaussian"` route already exists. This cycle adds Cornish-Fisher and Monte Carlo VaR, VaR backtests, stress, and limits in `templates/risk.py`. See also `references/stats-risk.md` and `references/live-trading.md`.
+- Historical and Gaussian VaR/CVaR already live in `templates/metrics.py` as `value_at_risk(returns, level=0.05, method="historical"|"gaussian")` and `conditional_value_at_risk(returns, level=0.05, method=...)` — note the parameter is named `level` (the lower-tail probability), not `alpha`, and a `"gaussian"` route already exists. `templates/risk.py` adds Cornish-Fisher VaR, **Filtered Historical Simulation (FHS)**, **age-weighted (BRW) historical VaR**, **EVT peaks-over-threshold (POT) tail VaR/ES**, VaR backtests (Kupiec/Christoffersen), stress, and risk-of-ruin. See also `references/stats-risk.md` and `references/live-trading.md`.
 
 ---
 
@@ -30,9 +30,9 @@ ES_alpha = E[ R_h | R_h <= VaR_alpha ]
 
 ES is always at least as bad (more negative) than VaR. It answers "when it's bad, how bad on average?" — VaR only tells you the doorway, ES tells you the room behind it.
 
-`templates/metrics.py` already implements `value_at_risk` and `conditional_value_at_risk` with both `method="historical"` and `method="gaussian"`. This cycle adds Cornish-Fisher and Monte Carlo routes plus backtesting and stress in `templates/risk.py`.
+`templates/metrics.py` already implements `value_at_risk` and `conditional_value_at_risk` with both `method="historical"` and `method="gaussian"`. `templates/risk.py` adds the Cornish-Fisher, Filtered-Historical, age-weighted, and EVT/POT routes plus backtesting and stress.
 
-### The three (four) estimation routes
+### The estimation routes
 
 #### (a) Historical (non-parametric)
 
@@ -67,7 +67,7 @@ def historical_es(returns, alpha=0.01):
     return float(tail.mean()) if tail.size else float(var)
 ```
 
-Pros: honest about the empirical tail. Cons: bounded by the worst thing in your window (you cannot estimate a 99.9% VaR from 250 days — the tail estimate is a single order statistic), and slow to react to vol regime shifts unless you weight recent data (e.g. age-weighted / BRW historical simulation) or filter by a vol model (Filtered Historical Simulation, FHS).
+Pros: honest about the empirical tail. Cons: **bounded by the worst thing in your window** — you cannot estimate a 99.9% VaR from 250 days, because at any `alpha < 1/N` the quantile is pinned at the sample minimum (a single order statistic that cannot extrapolate). It is also **slow to react to vol regime shifts**. The two principled fixes — both now implemented in `templates/risk.py` — are: weight recent data more (**age-weighted / BRW historical simulation**, `age_weighted_var`) or filter by a vol model (**Filtered Historical Simulation, FHS**, `filtered_historical_var_es`); and for the far tail, fit an **EVT/POT** model (`evt_pot_var_es`) that extrapolates beyond the sample. See §1(e).
 
 #### (b) Parametric / Gaussian (variance-covariance)
 
@@ -90,7 +90,7 @@ def gaussian_es(mu, sigma, alpha=0.01):
     return mu - sigma * norm.pdf(norm.ppf(alpha)) / alpha
 ```
 
-Pros: fast, composable across a portfolio via the covariance matrix (`sigma_p = sqrt(w' Σ w)`), easy to attribute. Cons: **systematically underestimates tail risk** for real financial returns, which are fat-tailed and left-skewed. The further into the tail, the worse the error. Do not use bare Gaussian VaR for capital on anything with crash risk (equities, credit, short-vol, crypto).
+Pros: fast, composable across a portfolio via the covariance matrix (`sigma_p = sqrt(w' Σ w)`), easy to attribute. Cons: **systematically underestimates tail risk** for real financial returns, which are fat-tailed and left-skewed. The further into the tail, the worse the error. Do not use bare Gaussian VaR for capital on anything with crash risk (equities, credit, short-vol, crypto). `templates/risk.py:gaussian_var` implements the scipy-free version (`statistics.NormalDist`) on a returns array.
 
 Often `mu` is set to 0 for short horizons (1-day): the mean is tiny relative to sigma and noisily estimated, and zeroing it is conservative for a long book.
 
@@ -129,7 +129,9 @@ def cornish_fisher_var(returns, alpha=0.01):
     return float(mu + sigma * z_cf)
 ```
 
-Caveat: Cornish-Fisher is an *approximation* that misbehaves for extreme skew/kurtosis (the implied quantile mapping can become non-monotonic in the deep tail, so very large `|S|`,`K` can produce nonsensical `z_cf`). It's a good cheap upgrade over Gaussian for moderate non-normality; it is not a substitute for an actual fat-tailed model (Student-t, EVT/POT for the far tail) when the tail is the whole point.
+(`templates/risk.py:cornish_fisher_var` ships the scipy-free version.)
+
+Caveat: Cornish-Fisher is an *approximation* that misbehaves for extreme skew/kurtosis (the implied quantile mapping can become non-monotonic in the deep tail, so very large `|S|`,`K` can produce nonsensical `z_cf`). It's a good cheap upgrade over Gaussian for moderate non-normality; **it is not a substitute for an actual fat-tailed model when the tail is the whole point** — use a Student-t, or for the far tail the EVT/POT route in §1(e) (`templates/risk.py:evt_pot_var_es`).
 
 #### (d) Monte Carlo
 
@@ -156,6 +158,48 @@ def monte_carlo_var(mu_vec, cov, weights, alpha=0.01, n=200_000, df=None, seed=0
 
 Monte Carlo is the only practical route for **nonlinear** portfolios: options/convexity, path-dependent payoffs, and barrier/knock-out structures where a linear (delta) approximation badly misstates tail PnL. For an options book, simulate the *risk factors* (spot, vol surface, rates) and **full-revalue** the book per scenario — do not VaR the deltas.
 
+#### (e) Reactive & tail-aware non-parametric VaR (implemented in `templates/risk.py`)
+
+When "the tail is the whole point" and the bare empirical quantile is too stale (a) or the parametric corrections (b/c) are unreliable, these three routes are the practitioner fixes. All are deterministic, scipy-free, and respect the loss-is-negative sign convention.
+
+**Filtered Historical Simulation (FHS)** — `filtered_historical_var_es(returns, level, lam=0.94, rolling=True)`. Real returns are not iid (vol clusters), so the empirical quantile of *raw* returns lags a vol spike. FHS standardizes each return by a **causal** EWMA vol forecast to get approximately-iid residuals, takes the empirical quantile/ES of those residuals (keeping the true fat-tailed/skewed shape), then **rescales by the current vol forecast** so the number reacts immediately:
+
+```
+sigma_t^2 = lam * sigma_{t-1}^2 + (1 - lam) * r_{t-1}^2   # causal: sigma_t known at t-1
+z_t       = r_t / sigma_t                                  # standardized residual
+z_q       = empirical quantile_level( z up to t-1 )        # non-parametric tail shape
+VaR_t     = sigma_t * z_q                                  # rescale by current vol
+ES_t      = sigma_t * mean( z | z <= z_q )
+```
+
+This is the industry-standard *reactive* VaR (Barone-Adesi–Giannopoulos–Vosper). `rolling=True` returns **causal** `(var_series, es_series)` (NaN during warm-up) that are directly backtestable with `count_exceptions`/`kupiec_pof` — no further lagging needed, the t-1 measurability is baked in. `rolling=False` returns a single "today" `(VaR, ES)` snapshot (uses the whole-sample residual quantile rescaled by the last vol — for a current number, not a backtest). On a fat-tailed, vol-clustered (GARCH-t) path FHS coverage tracks `alpha` closely while bare Gaussian over-breaches and is rejected by Kupiec.
+
+**Age-weighted (BRW) historical VaR** — `age_weighted_var(returns, level, decay=0.99)`. A non-parametric reactive VaR that needs *no* vol model: keep the empirical tail but weight recent observations more (Boudoukh–Richardson–Whitelaw). With the most recent observation at age 0,
+
+```
+w_i = decay^(age_i) / sum_j decay^(age_j)
+VaR = smallest return r whose cumulative ascending-sorted weight first reaches level
+```
+
+`returns` must be chronological (oldest first). As `decay -> 1` every weight is equal and it collapses to plain historical VaR; lower `decay` is more reactive but uses fewer effective observations (more tail noise). Typical `decay` ∈ [0.97, 0.995].
+
+**EVT peaks-over-threshold (POT)** — `evt_pot_var_es(returns, level=0.001, threshold_q=0.95)`. The principled route to **deep** quantiles (99%, 99.9%) from a short sample, where a historical quantile is just the worst one or two points. Work on losses `L = -returns`; pick a high threshold `u` (the `threshold_q` loss quantile). By the **Pickands–Balkema–de Haan** theorem the exceedances `(L - u | L > u)` converge to a **Generalized Pareto** `GPD(xi, beta)`. Fit it by **probability-weighted moments (PWM, Hosking–Wallis)** — closed-form, no optimizer:
+
+```
+a0 = mean(exceedances),  a1 = (1/n) sum_j ((n-1-j)/(n-1)) * x_(j)   # ascending order stats
+xi   = 2 - a0 / (a0 - 2 a1)
+beta = 2 a0 a1 / (a0 - 2 a1)
+```
+
+then the closed-form tail estimators (McNeil–Frey), with `n` obs, `Nu` exceedances, deep tail prob `level`:
+
+```
+VaR_p(L) = u + (beta/xi) * ( ( (n/Nu) * level )^(-xi) - 1 )      # xi != 0
+ES_p(L)  = VaR_p(L)/(1 - xi) + (beta - xi*u)/(1 - xi)           # xi < 1
+```
+
+(an exponential-tail `xi=0` limit is handled separately), flipped back to negative-return sign. The fitted **`xi` is the tail index**: `xi > 0` heavy power-law tail with exponent `alpha = 1/xi` (equities/credit/crypto live at `xi ≈ 0.1–0.4`), `xi = 0` exponential, `xi < 0` bounded. A genuine `xi >= 1` means **infinite mean** (ES does not exist). One sharp gotcha the template enforces: **the PWM estimator is mathematically capped at `xi -> 1` and cannot exceed it** (it requires a finite first GPD moment), so it will *pin* a catastrophic tail just below 1 rather than reporting `xi >= 1`. The function therefore returns `xi_near_one` (set when `xi >= 0.9`): treat the ES as untrustworthy in that regime — raise the threshold, get more data, or switch to a maximum-likelihood GPD fit (which *can* return `xi >= 1`). Requires `level < 1 - threshold_q` (you can only extrapolate *beyond* the threshold you fit above).
+
 ### Horizon scaling
 
 Single-period VaR scales to `h` periods under iid as `VaR_h ≈ mu*h + sigma*sqrt(h)*z`. The `sqrt(h)` (square-root-of-time) rule assumes iid returns; **return autocorrelation or vol clustering breaks it** (positive autocorrelation makes true multi-day risk larger than `sqrt(h)` implies). For regulatory/serious multi-day risk, prefer overlapping h-day returns directly or simulate paths rather than scaling a 1-day number.
@@ -170,13 +214,13 @@ A risk measure `ρ` is **coherent** (Artzner et al.) if it is monotone, translat
 
 **ES is coherent** (subadditive) and **tail-sensitive** (it integrates the whole tail). Basel's market-risk framework (FRTB) moved from 99% VaR to 97.5% ES for exactly these reasons. Use ES for capital allocation, risk budgeting, and limits where you care about the severity of bad outcomes. Keep VaR around for backtesting (it has clean, well-established exception tests — ES backtesting is harder, though Acerbi-Szekely tests exist) and for communication.
 
-Practical default: **size and budget on ES; backtest on VaR; report both.**
+Practical default: **size and budget on ES; backtest on VaR; report both.** For the far-tail ES that capital actually depends on, prefer the EVT/POT ES (§1e) over a historical tail mean that is just one or two order statistics.
 
 ---
 
 ## 3. VaR backtesting
 
-A VaR forecast is a falsifiable prediction: "next period's loss exceeds `VaR_alpha` with probability `alpha`." Backtesting checks whether realized **exceptions** (a.k.a. breaches/violations: `r_t < VaR_t`, comparing the *forecast made at t-1* to the *return realized at t*) match that claim. Always use **out-of-sample, rolling** VaR forecasts — backtesting an in-sample fitted VaR is circular and meaningless.
+A VaR forecast is a falsifiable prediction: "next period's loss exceeds `VaR_alpha` with probability `alpha`." Backtesting checks whether realized **exceptions** (a.k.a. breaches/violations: `r_t < VaR_t`, comparing the *forecast made at t-1* to the *return realized at t*) match that claim. Always use **out-of-sample, rolling** VaR forecasts — backtesting an in-sample fitted VaR is circular and meaningless. The rolling FHS output (`filtered_historical_var_es(..., rolling=True)`) is causal by construction, so it can be fed straight into the tests below.
 
 Define the hit/exception indicator:
 ```
@@ -216,7 +260,7 @@ def kupiec_pof(exceptions, alpha, conf=0.95):
             "crit": chi2.ppf(conf, 1), "reject": lr > chi2.ppf(conf, 1)}
 ```
 
-Kupiec catches *too many* or *too few* exceptions but is blind to **clustering**.
+(`templates/risk.py:kupiec_pof` ships the scipy-free version and takes a returns series plus an aligned `var_series`.) Kupiec catches *too many* or *too few* exceptions but is blind to **clustering**.
 
 ### Christoffersen — independence + conditional coverage
 
@@ -253,7 +297,7 @@ def christoffersen(exceptions, alpha, conf=0.95):
             "reject_cc":  lr_cc > chi2.ppf(conf,2)}
 ```
 
-Note: `LR_ind` degenerates (set to 0) when a transition cell is empty — common when there are zero or one exceptions. In that regime the independence test has essentially no power; lean on Kupiec and a longer window.
+(`templates/risk.py` ships `christoffersen` (independence) and `christoffersen_cc(exceptions, level)` (the full df=2 conditional-coverage test against a target level), both scipy-free.) Note: `LR_ind` degenerates (set to 0) when a transition cell is empty — common when there are zero or one exceptions. In that regime the independence test has essentially no power; lean on Kupiec and a longer window.
 
 ### Basel traffic-light
 
@@ -304,6 +348,8 @@ def factor_stress(exposures: dict, shocks: dict) -> float:
     return sum(exposures.get(f, 0.0) * s for f, s in shocks.items())
 ```
 
+(`templates/risk.py:stress_pnl` / `stress_grid` ship this for dict- or array-keyed exposures/shocks and a named scenario grid.)
+
 ### Hypothetical / forward-looking shocks
 
 Construct scenarios that haven't happened but plausibly could: +200bp parallel rate jump, −15% one-day equity gap, oil +50%, your two largest positions both gap against you, a key counterparty defaults. Cover correlated *combinations* — a single-factor shock library misses the joint moves that actually do damage.
@@ -331,7 +377,7 @@ Drawdown *control* means acting on it: de-gross as drawdown deepens (drawdown-ba
 
 ### Risk of ruin
 
-For a strategy with per-bet edge, the probability of hitting a ruin barrier before a target grows fast with leverage and bet size. The intuition that matters for sizing: **losses compound asymmetrically** — a −50% drawdown needs +100% to recover; −80% needs +400%. The required recovery return after a drawdown `DD` (with `DD < 0`) is `1/(1+DD) - 1` (this is "gain needed to get back to the peak," not the trading "recovery factor" = net profit / max drawdown, which is a different, unrelated metric). Bounding drawdown is bounding the *required recovery*, which is the real constraint on survival.
+For a strategy with per-bet edge, the probability of hitting a ruin barrier before a target grows fast with leverage and bet size. `templates/risk.py:risk_of_ruin` is a seeded Monte-Carlo estimator (fixed-fraction betting; monotone in bet size — over-betting raises ruin probability). The intuition that matters for sizing: **losses compound asymmetrically** — a −50% drawdown needs +100% to recover; −80% needs +400%. The required recovery return after a drawdown `DD` (with `DD < 0`) is `1/(1+DD) - 1` (this is "gain needed to get back to the peak," not the trading "recovery factor" = net profit / max drawdown, which is a different, unrelated metric). Bounding drawdown is bounding the *required recovery*, which is the real constraint on survival.
 
 ### Leverage and margin
 
@@ -343,7 +389,7 @@ Track gross *and* net leverage, and stress the margin requirement under the scen
 
 ### The Kelly connection
 
-Kelly sizing maximizes long-run log-growth: for a single edge with excess return `mu` over the risk-free rate and variance `sigma^2`, the continuous (Merton) approximation is `f* = mu / sigma^2`; for the discrete betting form, `f* = edge/odds`. Full Kelly maximizes growth but has brutal drawdowns (the optimal-growth path routinely draws down ~50%+). Practitioners run **fractional Kelly** (¼–½) to trade a little growth for far smaller drawdowns and robustness to *estimation error in `mu`* — and `mu` is always badly estimated. Over-betting past `f*` *lowers* growth and raises ruin probability, so Kelly is also an upper bound on sane leverage, not a target. This links sizing (§5) directly to the risk budget (§6) and ES (§2): size so that ES at your chosen confidence stays within the loss you can survive.
+Kelly sizing maximizes long-run log-growth: for a single edge with excess return `mu` over the risk-free rate and variance `sigma^2`, the continuous (Merton) approximation is `f* = mu / sigma^2`; for the discrete betting form, `f* = edge/odds` (equivalently `f* = p - (1-p)/b` for win prob `p` and win/loss ratio `b`; `templates/risk.py:kelly_fraction`). Full Kelly maximizes growth but has brutal drawdowns (the optimal-growth path routinely draws down ~50%+). Practitioners run **fractional Kelly** (¼–½) to trade a little growth for far smaller drawdowns and robustness to *estimation error in `mu`* — and `mu` is always badly estimated. Over-betting past `f*` *lowers* growth and raises ruin probability, so Kelly is also an upper bound on sane leverage, not a target. This links sizing (§5) directly to the risk budget (§6) and ES (§2): size so that ES at your chosen confidence stays within the loss you can survive.
 
 ---
 
@@ -454,9 +500,12 @@ A perfect VaR model with no limit, no stop, and no one watching the post-trade m
 
 | Pitfall | Detect | Fix |
 |---------|--------|-----|
-| **Gaussian VaR underestimates fat tails** | Backtest exceptions far exceed `alpha*N`; sample excess kurtosis ≫ 0, negative skew | Use historical / Cornish-Fisher / Student-t / EVT for the tail; size capital on ES not Gaussian VaR |
-| **In-sample VaR** | VaR fit and "tested" on the same window; suspiciously clean coverage | Use rolling out-of-sample forecasts (VaR_t from data ≤ t-1) before counting exceptions |
-| **Ignoring ES / tail shape** | Risk limits and capital keyed only to VaR; two books with equal VaR sized identically | Adopt ES (coherent, tail-sensitive) for capital/limits; report VaR and ES together |
+| **Gaussian VaR underestimates fat tails** | Backtest exceptions far exceed `alpha*N`; sample excess kurtosis ≫ 0, negative skew | Use historical / Cornish-Fisher / FHS / EVT for the tail; size capital on ES not Gaussian VaR (`templates/risk.py`) |
+| **Stale historical VaR misses vol regime shifts** | Exceptions cluster in high-vol periods (fails Christoffersen); VaR flat while realized vol doubles | Use Filtered Historical Simulation (`filtered_historical_var_es`, vol-rescaled) or age-weighting (`age_weighted_var`); both react while keeping the empirical tail shape |
+| **Can't estimate the far tail (99.9%) from a short sample** | Historical VaR at `alpha < 1/N` is pinned at the sample minimum; ES is one or two order statistics | Fit EVT/POT (`evt_pot_var_es`): a GPD tail extrapolates beyond the worst observation and gives a principled 99.9% VaR/ES |
+| **Trusting an EVT ES from a near-infinite-mean fit** | EVT `xi` very close to 1; `xi_near_one` flag set; ES wildly sensitive to a handful of exceedances | PWM caps `xi` just below 1; treat ES as unreliable when `xi_near_one`. Raise `threshold_q`, get more data, or use an ML GPD fit (can return `xi >= 1`) |
+| **In-sample VaR** | VaR fit and "tested" on the same window; suspiciously clean coverage | Use rolling out-of-sample forecasts (VaR_t from data ≤ t-1) before counting exceptions; the rolling FHS output is causal by construction |
+| **Ignoring ES / tail shape** | Risk limits and capital keyed only to VaR; two books with equal VaR sized identically | Adopt ES (coherent, tail-sensitive) for capital/limits; report VaR and ES together; use EVT ES for the far tail |
 | **Static crisis correlations** | Normal-times `Σ` used in stress; exceedance corr ≫ full-sample corr | Estimate stressed `Σ` on worst-decile days; use Student-t/Clayton copula for tail dependence |
 | **No VaR backtest** | A VaR number is reported but never validated | Run Kupiec (unconditional) + Christoffersen (independence + conditional) + Basel traffic-light on a rolling basis |
 | **MC Student-t variance bug** | t-VaR much larger than historical even at moderate `df`; simulated cov ≠ input `Σ` | Rescale by `sqrt((df-2)/df)` so the simulated covariance equals `Σ`; require `df > 2` |
@@ -469,7 +518,7 @@ A perfect VaR model with no limit, no stop, and no one watching the post-trade m
 ---
 
 ## See also
-- `templates/risk.py` — Cornish-Fisher / Monte-Carlo VaR & ES, Kupiec/Christoffersen backtests, stress & limits
+- `templates/risk.py` — Cornish-Fisher / Filtered-Historical / age-weighted / EVT-POT VaR & ES, Kupiec/Christoffersen backtests, risk-of-ruin, stress & limits
 - `templates/metrics.py` — historical & Gaussian VaR/CVaR (`value_at_risk`/`conditional_value_at_risk`, param `level`), `max_drawdown`, Sharpe
 - `templates/pretrade_checks.py` — deterministic pre-trade limit gating (notional-based, std-lib only)
 - `references/stats-risk.md` — distributions, estimators, hypothesis tests

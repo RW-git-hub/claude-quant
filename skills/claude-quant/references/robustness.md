@@ -1,6 +1,6 @@
 # Robustness & Overfitting Lab
 
-Stress-testing whether a backtested edge is real. A single backtest produces one number; this reference is about turning that number into a *distribution* and asking how often an edge this good appears under the null hypothesis of no skill. Complements `templates/validation.py` (purged/combinatorial CV), `references/stats-risk.md` (deflated/probabilistic Sharpe, PBO), `templates/metrics.py` (Sharpe SE, PSR, DSR), and `templates/costs.py` (cost models, breakeven).
+Stress-testing whether a backtested edge is real. A single backtest produces one number; this reference is about turning that number into a *distribution* and asking how often an edge this good appears under the null hypothesis of no skill. Complements `templates/robustness.py` (MCPT, stationary bootstrap, Reality Check, plateau), `templates/overfitting.py` (**shipped PBO/CSCV** — `pbo_cscv`, `performance_degradation`), `templates/validation.py` (purged/combinatorial CV), `references/stats-risk.md` (deflated/probabilistic Sharpe, PBO), `templates/metrics.py` (Sharpe SE, PSR, DSR), and `templates/costs.py` (cost models, breakeven).
 
 Conventions used throughout: simple returns compound multiplicatively; annualized Sharpe = `mean(excess)/std(excess, ddof=1)*sqrt(ppy)` with daily `ppy=252` (iid assumption — see autocorrelation caveat in §3); positions are lagged versus the returns they earn, `pnl_t = pos.shift(1) * ret_t`. All code below operates on NumPy arrays — coerce pandas inputs with `np.asarray(...)` first to avoid index-alignment surprises during resampling/permutation.
 
@@ -27,7 +27,7 @@ A backtest is one realized path drawn from a vast space of strategies, parameter
 | Sign-flip | random ±1 on returns | Is the mean return distinguishable from zero (symmetric null)? |
 | Block/stationary bootstrap | resampled blocks of the realized series | What is the sampling CI of Sharpe / CAGR / MDD? |
 | White's RC / Hansen's SPA | bootstrap over the best-of-N | Does the *best* strategy beat the benchmark after snooping? |
-| Deflated Sharpe / PBO | analytical / CSCV | Sharpe adjusted for N trials; P(IS-best is OOS-loser) |
+| Deflated Sharpe / PBO | analytical / CSCV (`templates/overfitting.py:pbo_cscv`) | Sharpe adjusted for N trials; P(IS-best is OOS-loser) |
 
 ---
 
@@ -214,7 +214,9 @@ These are the analytical counterparts to the resampling tests above; they are do
 
 - **Deflated Sharpe Ratio (DSR):** PSR with the benchmark set to the **expected maximum Sharpe under the null given N trials** — the analytical answer to §4's multiple-testing problem for the single best Sharpe. Requires an honest count of trials `N` (the garden of forking paths means `N` is larger than you think) and the **standard deviation (across trials) of the per-period trial Sharpes** (`trial_sharpe_std` — a std, not a variance). Assumes roughly independent trials; correlated grid searches have a smaller *effective* N, making the test conservative. See `templates/metrics.py:deflated_sharpe_ratio` / `expected_max_sharpe` and `references/stats-risk.md`.
 
-- **PBO via CSCV (Probability of Backtest Overfitting):** Combinatorially split the data, find the in-sample-best configuration in each split, and measure how often it lands in the *bottom half* out-of-sample. PBO is that fraction; >0.5 means the selection process is anti-predictive. See `references/stats-risk.md` and the combinatorial CV machinery in `templates/validation.py` (`CombinatorialPurgedKFold`).
+- **PBO via CSCV (Probability of Backtest Overfitting):** Combinatorially split the data, find the in-sample-best configuration in each split, and measure how often it lands in the *bottom half* out-of-sample. PBO is that fraction; >0.5 means the selection process is anti-predictive.
+
+> **Shipped:** `templates/overfitting.py`. `pbo_cscv(perf, n_blocks=16)` is the CSCV implementation per `references/stats-risk.md` §1.5 — it splits the `(T × N_config)` per-period performance matrix into `S` even contiguous blocks, enumerates all `C(S, S/2)` symmetric train/test partitions, selects the in-sample-best config by Sharpe in each, maps its out-of-sample relative rank `ω∈(0,1)` to a logit `λ = ln(ω/(1−ω))`, and returns `PBO = mean(λ ≤ 0)` plus the full logit distribution and `median_logit`. `performance_degradation(perf, n_blocks=16)` adds the López de Prado "is OOS predicted by IS?" check: the OLS slope of the selected config's OOS Sharpe on its IS Sharpe (note that across CSCV's symmetric splits IS and OOS partition the *same* fixed sample, which mechanically pushes this selected-pair slope negative even under a genuine edge — read it as a directional flag, not a calibrated effect size) and `P[OOS Sharpe < 0 | selected]` (probability of loss). `build_perf_matrix({name: returns})` aligns a dict of strategy return series into the `(T × N)` matrix. The deterministic, exhaustive CSCV from one dataset approximates the PBO you would estimate from many independent samples (Bailey-Borwein-LdP-Zhu 2017). Feed the **full** search, including discarded configs (survivors-only reintroduces snooping). The honest overfitting null is *no persistent edge* (per-config full-sample mean ≈ 0): when you demean each column to a true mean of exactly 0, PBO → 1 (selecting the IS-best is purely anti-predictive). Raw i.i.d. noise is a softer, *ambiguous* null — each column's full-sample mean is a tiny draw from `N(0, σ²/T)`, so its PBO is not reliably above or below 0.5 (it hovers near 0.5 with wide seed-to-seed scatter); the demeaned null is the clean, deterministic test. Pair `pbo_cscv` with `metrics.deflated_sharpe_ratio` (DSR deflates the headline number for N trials; PBO asks whether the *ranking* generalizes — they fail differently). See `references/stats-risk.md` §1.5 and the combinatorial CV machinery in `templates/validation.py` (`CombinatorialPurgedKFold`), whose multi-path OOS returns feed straight into `pbo_cscv` as columns.
 
 The relationship: §2–§5 are empirical/resampling stress tests on a path; §6 are the statistically principled corrections for selection bias. Use both — they fail in different ways.
 
@@ -264,7 +266,7 @@ Run before allocating capital. Treat any "no" as a blocker until explained.
 - [ ] **Bootstrap CIs reported** for Sharpe, CAGR, and MDD using a block/stationary bootstrap — and the Sharpe CI excludes zero.
 - [ ] **Multiple testing accounted for.** Deflated Sharpe with an honest trial count, or SPA/Reality Check for best-of-N. Naive winner p-value is *not* sufficient.
 - [ ] **Parameters sit on a plateau.** Neighbor degradation modest; reported metric is plateau-center, not peak. Heatmap inspected.
-- [ ] **PBO < 0.5** via CSCV (`references/stats-risk.md`).
+- [ ] **PBO < 0.5** via CSCV (`templates/overfitting.py:pbo_cscv`; see also `references/stats-risk.md` §1.5).
 - [ ] **Costs realistic and stress-tested.** Breakeven cost comfortably above realistic levels; survives 2–5× cost grid. (`templates/costs.py`)
 - [ ] **Regime-robust.** Edge not confined to one regime, one crisis year, or one window; survives start/end-date rolls.
 - [ ] **Universe-robust.** Survives dropping random names and the top PnL contributors.
@@ -289,4 +291,4 @@ Run before allocating capital. Treat any "no" as a blocker until explained.
 
 ---
 
-**See also:** `templates/metrics.py` (`sharpe_se`, `sharpe_tstat`, `lo_annualization_factor`, `probabilistic_sharpe_ratio`, `deflated_sharpe_ratio`, `expected_max_sharpe`) · `templates/validation.py` (`PurgedKFold`, `CombinatorialPurgedKFold`, walk-forward CV) · `templates/costs.py` (`breakeven_cost_bps`, slippage/impact models) · `references/stats-risk.md` (DSR/PSR/PBO detail) · `references/pitfalls.md`. Runnable MCPT / stationary-bootstrap / Reality-Check / parameter-plateau helpers are in `templates/robustness.py`.
+**See also:** `templates/metrics.py` (`sharpe_se`, `sharpe_tstat`, `lo_annualization_factor`, `probabilistic_sharpe_ratio`, `deflated_sharpe_ratio`, `expected_max_sharpe`) · `templates/overfitting.py` (`pbo_cscv`, `performance_degradation`, `build_perf_matrix`) · `templates/validation.py` (`PurgedKFold`, `CombinatorialPurgedKFold`, walk-forward CV) · `templates/costs.py` (`breakeven_cost_bps`, slippage/impact models) · `references/stats-risk.md` (DSR/PSR/PBO detail) · `references/pitfalls.md`. Runnable MCPT / stationary-bootstrap / Reality-Check / parameter-plateau helpers are in `templates/robustness.py`.

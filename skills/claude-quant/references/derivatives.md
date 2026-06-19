@@ -87,10 +87,10 @@ Rho    call:   K*T*exp(-r*T)*N(d2)        put:  -K*T*exp(-r*T)*N(-d2)
 
 **Key relationships:** Gamma and Vega are always positive for long vanilla options (same sign for calls and puts) and peak near ATM (strictly, Gamma and Vega peak slightly above ATM-spot, around the ATM-forward strike). Theta and gamma trade off: being long gamma costs theta. Deep-ITM options have delta → ±1 and gamma → 0.
 
-**Second-order Greeks (vol risk management):**
-- **Vanna** = `∂Delta/∂sigma = ∂Vega/∂S`. How delta moves as vol changes (or vega as spot moves). Drives the cost of risk reversals; dominant in skewed surfaces.
-- **Volga (vomma)** = `∂Vega/∂sigma`. Convexity of value in vol; long butterflies/strangles are long volga. Matters when vol-of-vol is high.
-- **Charm** = `∂Delta/∂T` (delta decay). Causes a static option's delta to drift over time even if spot is flat — the source of "hedge re-balancing at the open" flows and pin risk near expiry.
+**Second-order Greeks (vol risk management):** closed forms below (per 1.00 of vol; divide by 100 for per vol-point). They are call/put-symmetric except charm.
+- **Vanna** = `∂Delta/∂sigma = ∂Vega/∂S = -exp(-q*T)*n(d1)*d2/sigma`. How delta moves as vol changes (or vega as spot moves). Sign follows `−d2`, so it flips across the money. Drives the cost of risk reversals; dominant in skewed surfaces.
+- **Volga (vomma)** = `∂Vega/∂sigma = Vega*d1*d2/sigma`. Convexity of value in vol; long butterflies/strangles are long volga (positive where `d1*d2 > 0`). Matters when vol-of-vol is high.
+- **Charm** = `∂Delta/∂T_calendar = −∂Delta/∂tau` (delta decay, per year). Closed form: `common = exp(-q*T)*n(d1)*[(r-q)/(sigma*sqrt(T)) - d2/(2T)]`, then `charm_call = q*exp(-q*T)*N(d1) - common`, `charm_put = -q*exp(-q*T)*N(-d1) - common`. Causes a static option's delta to drift over time even if spot is flat — the source of "hedge re-balancing at the open" flows and pin risk near expiry.
 
 > Detect: a "delta-neutral" book that bleeds on quiet days. Fix: check charm (delta drifted as `T` shrank) and vanna (delta moved because the surface shifted), not just spot delta.
 
@@ -157,7 +157,7 @@ IV as a function of strike (or delta) and expiry. The surface is the object you 
 
 **Long gamma vs short gamma P&L.** Long gamma = long convexity: you profit from large moves (realized > implied) and *pay theta* for the privilege (you rebalance against the move, buying low/selling high). Short gamma = short convexity: you collect theta and lose on large moves — the classic "picking up pennies in front of a steamroller." The breakeven move per period is set by the theta/gamma ratio (≈ implied daily move).
 
-Variance swaps are preferred over straddles for clean vol exposure because a delta-hedged straddle's exposure drifts with spot, while a variance swap is engineered to have *constant cash (dollar) gamma* — its exposure to *variance* is constant, delivered via a `1/K²`-weighted strip of options. (Its vega *in vol terms* is not constant: it scales with the level of vol, roughly `2*sigma*notional_var`.) **Variance ≠ vol²:** a vol swap requires a convexity correction (variance is convex in vol; ignoring it overpays).
+Variance swaps are preferred over straddles for clean vol exposure because a delta-hedged straddle's exposure drifts with spot, while a variance swap is engineered to have *constant cash (dollar) gamma* — its exposure to *variance* is constant, delivered via a `1/K²`-weighted strip of options. (Its vega *in vol terms* is not constant: it scales with the level of vol, roughly `2*sigma*notional_var`.) **Variance ≠ vol²:** a vol swap requires a convexity correction. Because variance is convex in vol (Jensen), `E[sqrt(var)] ≤ sqrt(E[var])`, so the fair vol-swap strike sits *below* the square root of the variance-swap strike; quoting a vol swap at `sqrt(K_var)` and ignoring the (negative) convexity adjustment overpays for the vol swap.
 
 ---
 
@@ -179,7 +179,7 @@ P&L ≈ 0.5 * Gamma * S^2 * (sigma_realized^2 - sigma_implied^2) * dt
 
 So delta-hedging a long option is a bet that realized vol exceeds the implied vol you paid. This is *why* an option's value reduces to a vol view once delta is neutralized.
 
-**Discrete-hedging error.** With finite rebalancing, replication is imperfect; the hedging error has approximately zero mean but nonzero variance. The standard result (Boyle-Emanuel / Bertsimas-Kogan-Lo) is that the *standard deviation* of the hedging error scales like `~1/sqrt(N)` in the number of rehedges — equivalently its *variance* scales like `~1/N` (more frequent ⇒ lower variance but higher transaction cost). The gamma-theta tradeoff, balanced against costs, sets the optimal frequency.
+**Discrete-hedging error.** With finite rebalancing, replication is imperfect; the hedging error has approximately zero mean but nonzero variance. The standard result (Boyle-Emanuel / Bertsimas-Kogan-Lo) is that the *standard deviation* of the hedging error scales like `~1/sqrt(N)` in the number of rehedges — equivalently its *variance* scales like `~1/N` (more frequent ⇒ lower variance but higher transaction cost). The gamma-theta tradeoff, balanced against costs, sets the optimal frequency. The companion `delta_hedge_pnl` simulator makes this concrete: the gamma-theta attribution reconciles to the realized hedged P&L only in the `dt → 0` limit, and the gap *is* the discrete-hedging error — it is unbiased across paths and shrinks under refinement.
 
 > Detect: a backtest that delta-hedges continuously / costlessly and shows a smooth Sharpe. Fix: hedge on a realistic schedule (fixed-time or delta-band), charge spread + impact on every rebalance (see `references/transaction-costs.md`), and report the *distribution* of P&L — discrete hedging adds fat-tailed slippage, especially short gamma into a gap.
 
@@ -196,7 +196,7 @@ u = exp(sigma*sqrt(dt));  d = 1/u
 p = (exp((r - q)*dt) - d) / (u - d)        # risk-neutral up-prob
 ```
 
-Backward-induct: at each node `value = max(intrinsic, exp(-r*dt)*(p*V_up + (1-p)*V_down))`. The `max` with intrinsic is the early-exercise check — that is the only structural difference from a European tree.
+Backward-induct: at each node `value = max(intrinsic, exp(-r*dt)*(p*V_up + (1-p)*V_down))`. The `max` with intrinsic is the early-exercise check — that is the only structural difference from a European tree. Guard `0 ≤ p ≤ 1`: `p` stays in `[0,1]` exactly when `sigma*sqrt(dt) ≥ |(r-q)*dt|`, so with large `|(r-q)|` (huge carry) and too few steps `p` leaves `[0,1]` and the tree silently produces an arbitrageable price (the companion `crr_price` raises rather than return it; the fix is more steps, which shrinks `dt` faster than `sqrt(dt)`).
 
 **When early exercise matters:**
 - **American calls on a dividend-paying stock:** optimal to exercise only just *before* an ex-dividend date if the dividend exceeds the remaining time value. On a *non*-dividend stock, never exercise a call early (so it equals its European value).
@@ -220,7 +220,7 @@ Quote convention matters: `S` is units of domestic per one unit of foreign (e.g.
 **Carry trade.** Borrow low-yield, invest high-yield; earns the rate differential. CIP says the forward already prices this out, but the *carry trade bets uncovered interest parity (UIP) fails* — historically it does (carry earns a premium that periodically crashes when the funding currency rallies). Carry P&L ≈ rate differential − spot depreciation of the high-yield currency.
 
 **FX option quoting in delta terms.** FX desks quote vol by **delta**, not strike, and define structures off the smile:
-- **ATM** = the delta-neutral straddle vol. For the (non-premium-adjusted) forward-delta convention this corresponds to `K = F*exp(0.5*sigma²T)`; the exact ATM strike depends on the delta convention. This is *not* ATM-spot.
+- **ATM** = the delta-neutral straddle (DNS) vol. For the (non-premium-adjusted) forward-delta convention this corresponds to `K = F*exp(0.5*sigma²T)` (the strike where the forward-delta of the call and put are equal and opposite, i.e. `d1 = 0`); the exact ATM strike depends on the delta convention. This is *not* ATM-spot.
 - **25-delta risk reversal (RR)** = `IV(25Δ call) − IV(25Δ put)` — the **skew** of the smile (sign and size of the tilt).
 - **25-delta butterfly (BF)** = `0.5*(IV(25Δ call) + IV(25Δ put)) − IV(ATM)` — the **convexity** (smile curvature). (Note: market-quoted "broker butterfly" / smile-strangle conventions can differ from this simple vol-of-strangle definition; reconcile against your data source.)
 
@@ -274,8 +274,8 @@ swap_rate = (1 - D(T_n)) / sum_i( tau_i * D(T_i) )      # standard single-curve 
 | Spot vs forward (and ATM-spot vs ATM-forward) | Using `K=S` for "ATM"; spot delta where forward/premium-adj is quoted | Match exact convention before inverting strikes; use `F = S*exp((r-q)T)` |
 | Sign errors in put Greeks | Put delta entered positive; put theta sign flipped | Put delta = `exp(-qT)*(N(d1)-1) < 0`; rho_put < 0; re-derive from the table |
 | Wrong `r`/`q` in parity ⇒ phantom arb | `C-P` "violation" without checking borrow/dividends | Use borrow fee + discrete dividends for `q`, OIS/RFR for `r`; American ⇒ inequality |
-| Variance ≠ vol² | Pricing a vol swap as if linear in variance | Apply the vol-swap convexity correction |
+| Variance ≠ vol² | Pricing a vol swap as if linear in variance | Apply the (negative) vol-swap convexity correction; fair vol-swap strike < sqrt(K_var) |
 | Curve trade hedged by notional not DV01 | Net duration leaks into a "slope" bet | DV01-neutralize the legs |
 | Hedging-error variance scaling | Claiming variance ∝ 1/sqrt(N) | Std-dev ∝ 1/sqrt(N), variance ∝ 1/N (Boyle-Emanuel) |
 
-See `templates/options.py` for BSM pricing, the full Greek set (including vanna/volga/charm), IV inversion, a CRR American tree, and a delta-hedging simulator with the `0.5*Gamma*dS² + Theta*dt` P&L attribution.
+`templates/options.py` implements all of the above: `bs_price` and the full Greek set — `bs_delta`/`bs_gamma`/`bs_vega`/`bs_theta`/`bs_rho` plus the second-order `bs_vanna` (`-exp(-qT)n(d1)d2/sigma`), `bs_volga` (`Vega·d1·d2/sigma`) and `bs_charm` (the `∂Delta/∂T_calendar` closed form) bundled in `greeks()`; `implied_vol` (Newton + bisection inversion with no-arb guards); `crr_price`/`crr_american` (the CRR tree with the early-exercise overlay and a `0 ≤ p ≤ 1` guard); and `delta_hedge_pnl`, a discrete, cost-charged, no-look-ahead delta-hedging simulator that returns realized P&L decomposed into the `0.5*Gamma*dS² + Theta*dt` gamma-theta attribution plus the cost drag. Every formula is checked against finite differences and analytic limits in the module's self-tests.

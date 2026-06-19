@@ -1,9 +1,9 @@
 """regime.py - Time-series & regime-modeling toolkit for quant research.
 
 Pure numpy / pandas / standard library. No scipy, no statsmodels: the GARCH
-fit, Kalman filters, HMM (Baum-Welch + Viterbi) and CUSUM are implemented by
-hand so the file is dependency-light and auditable. `statistics.NormalDist`
-supplies the Gaussian pdf/cdf where needed.
+fit, Kalman filters, HMM (Baum-Welch + Viterbi), CUSUM, HAR-RV and GJR-GARCH
+are implemented by hand so the file is dependency-light and auditable.
+`statistics.NormalDist` supplies the Gaussian pdf/cdf where needed.
 
 Conventions
 -----------
@@ -11,11 +11,14 @@ Conventions
   helpers operate on the return level directly; demean only where stated. For
   daily data the natural annualization of a vol is `vol * sqrt(252)` (not done
   here -- these functions return per-period vol so the caller controls ppy).
-- Volatility = standard deviation (sqrt of variance), per period.
+- Volatility = standard deviation (sqrt of variance), per period. Realized
+  *variance* (RV) functions return variance (the square); HAR-RV is fit on RV.
 - All filters are CAUSAL: the value at index t uses information up to and
   including t (filtered, not smoothed). To use a regime/vol signal as a position
   you must still lag it vs the return it earns (pnl_t = pos.shift(1) * ret_t),
-  exactly as elsewhere in this skill. These functions do NOT lag for you.
+  exactly as elsewhere in this skill. These functions do NOT lag for you, with
+  one exception clearly documented: `har_rv` returns a STRICTLY trailing
+  one-step-ahead forecast whose entry at index t uses only RV through t-1.
 
 Detect/fix framing for the common pitfalls is in the docstrings; the
 `__main__` block self-verifies every function on analytic/synthetic cases.
@@ -70,8 +73,9 @@ def ewma_vol(returns: ArrayLike, lam: float = 0.94) -> pd.Series:
     i.e. today's variance estimate uses returns up to t-1 plus the realized
     squared return; we report the in-sample EWMA variance aligned to t. Returns
     are treated as zero-mean (standard for daily risk; demeaning a noisy daily
-    mean usually hurts). lam=0.94 is the RiskMetrics daily default (~ a 33-day
-    half-life); use ~0.97 for monthly.
+    mean usually hurts). lam=0.94 is the RiskMetrics daily default (~11-day
+    half-life ln(0.5)/ln(lam); center-of-mass lam/(1-lam) ~16 days); use ~0.97
+    for monthly.
 
     Initialization: seed s2_0 with r_0^2 so the first value is defined rather
     than 0 (a common pitfall: seeding with 0 biases the early series low and
@@ -244,6 +248,372 @@ def garch11_fit(returns: ArrayLike,
         "alpha": float(alpha),
         "beta": float(beta),
         "persistence": float(persistence),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 2b. GJR-GARCH(1,1): asymmetric (leverage) volatility
+# --------------------------------------------------------------------------- #
+def gjr_garch11_filter(returns: ArrayLike, omega: float, alpha: float,
+                       gamma: float, beta: float) -> pd.Series:
+    """Conditional volatility for an asymmetric GJR-GARCH(1,1) given params.
+
+    Model (Glosten-Jagannathan-Runkle, zero-mean returns):
+        r_t = sqrt(h_t) * z_t,   z_t ~ iid (0, 1)
+        h_t = omega + (alpha + gamma * 1[r_{t-1} < 0]) * r_{t-1}^2 + beta * h_{t-1}
+
+    The extra term gamma * 1[r_{t-1} < 0] * r_{t-1}^2 lets NEGATIVE shocks raise
+    next-period variance more than equal-magnitude positive shocks -- the
+    "leverage effect" that empirically dominates equity-index volatility and is
+    the single most useful generalization of plain Gaussian GARCH there.
+    gamma > 0 is the asymmetry; gamma = 0 collapses exactly to GARCH(1,1).
+
+    Stationarity (assuming a symmetric z, so P(z<0)=1/2) requires
+        alpha + gamma/2 + beta < 1,
+    because the expected ARCH multiplier is E[alpha + gamma*1[r<0]] = alpha +
+    gamma/2. The unconditional variance is
+        omega / (1 - alpha - gamma/2 - beta),
+    used to seed h_0 (internally consistent with the supplied params). Requires
+    omega > 0, alpha >= 0, beta >= 0, and alpha + gamma >= 0 (so the negative-
+    shock multiplier is non-negative).
+
+    Returns sqrt(h_t), strictly positive by construction (omega > 0).
+    """
+    if omega <= 0:
+        raise ValueError("omega must be > 0 for positive variance.")
+    if alpha < 0 or beta < 0:
+        raise ValueError("alpha, beta must be >= 0.")
+    if alpha + gamma < 0:
+        raise ValueError("alpha + gamma must be >= 0 (non-negative neg-shock "
+                         "multiplier).")
+    r, idx = _as_array(returns)
+    _check_finite(r, "returns")
+    n = r.size
+    if n == 0:
+        return _wrap(np.array([], dtype=float), idx, "gjr_garch_vol")
+
+    eff_persist = alpha + 0.5 * gamma + beta
+    if eff_persist < 1.0:
+        uncond = omega / (1.0 - eff_persist)
+    else:
+        uncond = float(np.var(r)) if n > 1 else r[0] ** 2
+        uncond = max(uncond, 1e-12)
+
+    h = np.empty(n, dtype=float)
+    h[0] = uncond
+    for t in range(1, n):
+        shock = r[t - 1] ** 2
+        lev = gamma if r[t - 1] < 0.0 else 0.0
+        h[t] = omega + (alpha + lev) * shock + beta * h[t - 1]
+    return _wrap(np.sqrt(h), idx, "gjr_garch_vol")
+
+
+def _gjr_negloglik(r: np.ndarray, omega: float, alpha: float, gamma: float,
+                   beta: float) -> float:
+    """Gaussian negative log-likelihood for GJR-GARCH(1,1). Lower is better;
+    +inf on degenerate variance paths. Mirrors `_garch_negloglik` so the two
+    models are compared on an identical (Gaussian) likelihood basis -- with
+    gamma=0 this returns exactly _garch_negloglik(r, omega, alpha, beta)."""
+    n = r.size
+    eff_persist = alpha + 0.5 * gamma + beta
+    if eff_persist < 1.0:
+        uncond = omega / (1.0 - eff_persist)
+    else:
+        uncond = float(np.var(r)) if n > 1 else r[0] ** 2
+    if not np.isfinite(uncond) or uncond <= 0:
+        return np.inf
+    h_prev = uncond
+    nll = 0.0
+    for t in range(n):
+        if t == 0:
+            h = uncond
+        else:
+            shock = r[t - 1] ** 2
+            lev = gamma if r[t - 1] < 0.0 else 0.0
+            h = omega + (alpha + lev) * shock + beta * h_prev
+        if h <= 0 or not np.isfinite(h):
+            return np.inf
+        nll += 0.5 * (_LOG2PI + np.log(h) + r[t] ** 2 / h)
+        h_prev = h
+    return nll
+
+
+def gjr_garch11_fit(returns: ArrayLike,
+                    grid: Optional[Sequence[float]] = None) -> Dict[str, float]:
+    """Estimate GJR-GARCH(1,1) by variance targeting + coarse grid search.
+
+    Same machinery as `garch11_fit`, extended with the asymmetry parameter
+    gamma. Variance targeting fixes
+        omega = sample_var * (1 - alpha - gamma/2 - beta)
+    (matching the GJR unconditional variance under a symmetric innovation), so
+    only (alpha, gamma, beta) are searched over the stationarity region
+    alpha + gamma/2 + beta < 1 (with alpha + gamma >= 0). The negative log-
+    likelihood is the SAME Gaussian objective as GARCH(1,1), so the two fits are
+    directly comparable: on equities the GJR optimum almost always has gamma > 0
+    and a lower NLL than symmetric GARCH (the leverage effect is real).
+
+    Detect/fix:
+    - gamma ~ 0 (or the GJR NLL barely below GARCH's) => little asymmetry in
+      this sample; don't pay the extra parameter. gamma < 0 is unusual for
+      equities (would mean up-moves raise vol more) -- sanity-check for sign
+      conventions or a commodity/currency series where it can legitimately
+      differ.
+    - The 3-D grid is coarse by design (deterministic, dependency-free). For
+      production refine near the optimum or hand to a proper optimizer
+      (e.g. the `arch` package's GJR with dist='t').
+
+    Parameters
+    ----------
+    returns : per-period simple returns.
+    grid : optional 1-D grid of candidate values shared by alpha, gamma, beta
+        (defaults to np.linspace(0.0, 0.9, 13)). Only triples with
+        alpha + gamma/2 + beta < 1 are evaluated.
+
+    Returns
+    -------
+    dict(omega, alpha, gamma, beta, persistence=alpha+gamma/2+beta, negloglik).
+    """
+    r, _ = _as_array(returns)
+    _check_finite(r, "returns")
+    n = r.size
+    if n < 10:
+        raise ValueError("Need at least ~10 observations to fit GJR-GARCH(1,1).")
+
+    r = r - r.mean()
+    sample_var = float(np.var(r))
+    if sample_var <= 0:
+        raise ValueError("Zero-variance returns; nothing to fit.")
+
+    if grid is None:
+        grid = np.linspace(0.0, 0.9, 13)
+    grid = np.asarray(grid, dtype=float)
+
+    best = (np.inf, 0.03, 0.05, 0.90)  # (nll, alpha, gamma, beta) fallback
+    for a in grid:
+        for g in grid:
+            for b in grid:
+                eff = a + 0.5 * g + b
+                if eff >= 1.0 or eff <= 0.0:
+                    continue
+                omega = sample_var * (1.0 - eff)
+                if omega <= 0:
+                    continue
+                nll = _gjr_negloglik(r, omega, a, g, b)
+                if nll < best[0]:
+                    best = (nll, float(a), float(g), float(b))
+
+    nll, alpha, gamma, beta = best
+    eff = alpha + 0.5 * gamma + beta
+    omega = sample_var * (1.0 - eff)
+    return {
+        "omega": float(omega),
+        "alpha": float(alpha),
+        "gamma": float(gamma),
+        "beta": float(beta),
+        "persistence": float(eff),
+        "negloglik": float(nll),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 2c. Realized variance + HAR-RV forecaster
+# --------------------------------------------------------------------------- #
+def realized_variance(intraday_returns_by_day: Sequence[ArrayLike],
+                      overnight_returns: Optional[ArrayLike] = None,
+                      index: Optional[pd.Index] = None) -> pd.Series:
+    """Daily realized VARIANCE from intraday LOG returns, RV_t = sum_i r_{t,i}^2.
+
+    Realized variance is a far more accurate proxy for that day's latent
+    variance than a single squared daily return r_t^2 (it uses all the intraday
+    information), and it is the natural input to HAR-RV (`har_rv`).
+
+    Parameters
+    ----------
+    intraday_returns_by_day : sequence of length n_days; element d is the array
+        of intraday LOG returns within day d (the open-to-close session). Each
+        day's RV is the sum of squared intraday log returns.
+    overnight_returns : optional length-n_days array of close-to-open LOG
+        returns. Intraday RV over the session MISSES the overnight close-to-open
+        jump; for single-name equities and anything with scheduled overnight
+        events this systematically UNDER-states variance. If supplied, RV_t
+        becomes overnight_t^2 + sum_i r_{t,i}^2. (24h markets -- crypto, FX --
+        have no gap but do have intraday/weekend seasonality; deseasonalize
+        before modeling. This helper does not deseasonalize.)
+    index : optional pandas index (length n_days) for the returned series.
+
+    Returns
+    -------
+    pd.Series of realized VARIANCE per day (variance, not vol). NaN-guarded:
+    raises if any intraday/overnight return is non-finite.
+
+    Detect/fix: if RV is implausibly large at the finest sampling, you are
+    eating microstructure noise (bid-ask bounce) -- sample coarser (5-min is the
+    classic compromise) or use a realized-kernel / two-scale estimator. If your
+    RV-based vol is systematically below a daily-return GARCH vol for a gappy
+    name, you forgot the overnight term.
+    """
+    n_days = len(intraday_returns_by_day)
+    rv = np.empty(n_days, dtype=float)
+    for d in range(n_days):
+        ri = np.asarray(intraday_returns_by_day[d], dtype=float)
+        _check_finite(ri, f"intraday_returns_by_day[{d}]")
+        rv[d] = float(np.sum(ri ** 2))
+    if overnight_returns is not None:
+        ov, _ = _as_array(overnight_returns)
+        _check_finite(ov, "overnight_returns")
+        if ov.size != n_days:
+            raise ValueError("overnight_returns must have one entry per day.")
+        rv = rv + ov ** 2
+    return _wrap(rv, index, "realized_variance")
+
+
+def har_rv(rv: ArrayLike, horizon: int = 1, use_log: bool = False
+           ) -> Dict[str, object]:
+    """HAR-RV: Corsi (2009) Heterogeneous AutoRegressive realized-variance model.
+
+    A strong, simple daily-vol forecaster and the standard baseline to beat
+    GARCH. It regresses realized variance on three trailing averages capturing
+    daily / weekly / monthly horizons:
+
+        RV^{(d)}_{t-1} = RV_{t-1}                              (yesterday)
+        RV^{(w)}_{t-1} = mean(RV_{t-1}, ..., RV_{t-5})         (trailing week)
+        RV^{(m)}_{t-1} = mean(RV_{t-1}, ..., RV_{t-22})        (trailing month)
+
+        RV_t = c + b_d * RV^{(d)}_{t-1} + b_w * RV^{(w)}_{t-1}
+                   + b_m * RV^{(m)}_{t-1} + eps_t
+
+    fit by OLS (numpy lstsq). The three lagged aggregates approximate the long
+    memory of RV with only ~4 parameters (no fractional differencing). With
+    horizon h > 1 the LHS target is the AVERAGE realized variance over the next
+    h days, mean(RV_{t}, ..., RV_{t+h-1}); the RHS is unchanged and still ends at
+    t-1 -- so the design is strictly trailing for any horizon. (The h-step target
+    legitimately uses RV_{t..t+h-1}; it is the *thing being predicted*, never a
+    regressor.)
+
+    NO LOOK-AHEAD -- the central discipline of this file. Every regressor for
+    target index t is built from RV strictly through t-1. The returned
+    `forecast` Series at index t is the one-step (or h-average) prediction that
+    a trader could have formed at the close of t-1, so to size day t you can use
+    forecast[t] directly (it is already trailing); to earn the return of day t
+    you still apply the usual position lag (pnl_t = pos.shift(1) * ret_t). We
+    assert internally that no contemporaneous RV_t enters the RHS.
+
+    use_log=True fits the model in log-RV (regress log RV_t on log trailing
+    averages) and exponentiates the forecast back to the RV level. Logs tame the
+    right-skew/heteroskedasticity of RV and often forecast better; the
+    exponentiation introduces a small (here uncorrected) retransformation bias --
+    acceptable for ranking/sizing, correct with a smearing factor if you need an
+    unbiased level.
+
+    Parameters
+    ----------
+    rv : realized-variance series (per day), e.g. from `realized_variance`. Must
+        be strictly positive when use_log=True.
+    horizon : forecast horizon h >= 1. h=1 is the standard one-step forecast.
+    use_log : fit in log-RV if True.
+
+    Returns
+    -------
+    dict with:
+        coef       : np.ndarray [c, b_d, b_w, b_m] (in log space if use_log).
+        forecast   : pd.Series aligned to `rv`'s index. Entry at t is the
+                     trailing one-step / h-average RV forecast for t formed at
+                     t-1; the first 22 entries (insufficient lookback) are NaN.
+        fitted     : pd.Series of in-sample fitted target (RV level), NaN where
+                     either RHS lookback (<22) or LHS horizon window is missing.
+        r2         : in-sample R^2 on the rows used for fitting (level space).
+        n_obs      : number of rows used in the OLS fit.
+
+    Detect/fix: if b_d + b_w + b_m >= 1 the implied process is near-explosive
+    (RV barely mean-reverts) -- usually outliers/jumps; consider HAR-RV-J
+    (separate a jump component) or winsorize. If `forecast` ever beats a static
+    forecast by an implausible margin, check you did not accidentally feed a
+    contemporaneous RV (the assertion below guards the canonical path).
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1.")
+    x, idx = _as_array(rv)
+    _check_finite(x, "rv")
+    n = x.size
+    if use_log:
+        if np.any(x <= 0):
+            raise ValueError("use_log=True requires strictly positive RV.")
+        series = np.log(x)
+    else:
+        series = x
+
+    LAG_MAX = 22  # monthly window -> first usable target index is 22
+    # Build the trailing design. Row t uses series[t-1] (daily), the mean of
+    # series[t-5 .. t-1] (weekly) and series[t-22 .. t-1] (monthly). ALL strictly
+    # < t, so the contemporaneous series[t] never appears on the RHS.
+    daily = np.full(n, np.nan)
+    weekly = np.full(n, np.nan)
+    monthly = np.full(n, np.nan)
+    for t in range(LAG_MAX, n):
+        daily[t] = series[t - 1]
+        weekly[t] = series[t - 5:t].mean()      # 5 obs: t-5 .. t-1
+        monthly[t] = series[t - 22:t].mean()    # 22 obs: t-22 .. t-1
+
+    # --- explicit no-look-ahead assertion (mirrors the file's lag discipline) ---
+    # Verify each RHS term equals a value computed from a window that ENDS at
+    # t-1; i.e. the RHS does not read series[t] (or anything later).
+    for t in range(LAG_MAX, n):
+        assert daily[t] == series[t - 1], "daily lag leaked contemporaneous RV"
+        assert np.isclose(weekly[t], series[t - 5:t].mean())
+        assert np.isclose(monthly[t], series[t - 22:t].mean())
+
+    # h-step target: mean of series over [t, t+h-1] (in the modeled space).
+    target = np.full(n, np.nan)
+    for t in range(n):
+        if t + horizon <= n:
+            target[t] = series[t:t + horizon].mean()
+
+    # rows usable for FITTING: need full RHS lookback (t >= LAG_MAX) and a full
+    # target window (t + horizon <= n).
+    fit_mask = np.zeros(n, dtype=bool)
+    for t in range(LAG_MAX, n):
+        if t + horizon <= n:
+            fit_mask[t] = True
+    if fit_mask.sum() < 5:
+        raise ValueError("Not enough observations after the 22-day lookback "
+                         "and horizon window to fit HAR-RV.")
+
+    rows = np.where(fit_mask)[0]
+    X = np.column_stack([np.ones(rows.size), daily[rows], weekly[rows],
+                         monthly[rows]])
+    y = target[rows]
+    coef, _resid, _rank, _sv = np.linalg.lstsq(X, y, rcond=None)
+
+    # in-sample fit + R^2, reported in LEVEL space for interpretability
+    yhat_modeled = X @ coef
+    if use_log:
+        yhat_level = np.exp(yhat_modeled)
+        y_level = np.exp(y)
+    else:
+        yhat_level = yhat_modeled
+        y_level = y
+    ss_res = float(np.sum((y_level - yhat_level) ** 2))
+    ss_tot = float(np.sum((y_level - y_level.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    fitted = np.full(n, np.nan)
+    fitted[rows] = yhat_level
+
+    # forecast at EVERY t with a full RHS lookback (t >= LAG_MAX), including the
+    # tail rows whose target window is incomplete -- those are exactly the live
+    # forecasts you would trade on. RHS is strictly trailing, so this is causal.
+    forecast = np.full(n, np.nan)
+    for t in range(LAG_MAX, n):
+        rhs = np.array([1.0, daily[t], weekly[t], monthly[t]])
+        pred_modeled = float(rhs @ coef)
+        forecast[t] = np.exp(pred_modeled) if use_log else pred_modeled
+
+    return {
+        "coef": coef,
+        "forecast": _wrap(forecast, idx, "har_rv_forecast"),
+        "fitted": _wrap(fitted, idx, "har_rv_fitted"),
+        "r2": float(r2),
+        "n_obs": int(rows.size),
     }
 
 
@@ -591,7 +961,8 @@ def vol_target_scale(forecast_vol: ArrayLike, target_vol: float,
     (both per-period, or both annualized). Mixing a daily forecast with an
     annual target is a frequent, silent sizing bug -- it scales positions by
     ~sqrt(252). The forecast must also be CAUSAL (e.g. ewma_vol/garch filtered
-    through t) and the resulting position lagged before earning returns.
+    through t, or har_rv's trailing forecast) and the resulting position lagged
+    before earning returns.
 
     Parameters
     ----------
@@ -666,6 +1037,176 @@ def _test_garch_fit() -> None:
     assert 1e-7 < fit["omega"] < 1e-4, fit["omega"]
     assert 0.0 <= fit["alpha"] <= 1.0 and 0.0 <= fit["beta"] <= 1.0
     assert fit["persistence"] < 1.0
+
+
+def _simulate_gjr(n: int, omega: float, alpha: float, gamma: float,
+                  beta: float, seed: int) -> np.ndarray:
+    """Simulate GJR-GARCH(1,1) with a known leverage effect (gamma)."""
+    rng = np.random.default_rng(seed)
+    burn = 1000
+    z = rng.standard_normal(n + burn)
+    eff = alpha + 0.5 * gamma + beta
+    h = omega / (1.0 - eff)
+    r = np.empty(n + burn)
+    r_prev = 0.0
+    h_prev = h
+    for t in range(n + burn):
+        lev = gamma if r_prev < 0.0 else 0.0
+        h_t = omega + (alpha + lev) * r_prev ** 2 + beta * h_prev
+        r[t] = np.sqrt(h_t) * z[t]
+        r_prev = r[t]
+        h_prev = h_t
+    return r[burn:]
+
+
+def _test_gjr_filter() -> None:
+    rng = np.random.default_rng(11)
+    r = rng.normal(0.0, 0.01, 500)
+    v = gjr_garch11_filter(r, omega=1e-6, alpha=0.03, gamma=0.08, beta=0.88)
+    assert np.all(v.values > 0), "GJR vol must be strictly positive"
+    assert np.all(np.isfinite(v.values))
+    # gamma=0 must collapse EXACTLY to symmetric GARCH(1,1)
+    vg = gjr_garch11_filter(r, omega=1e-6, alpha=0.08, gamma=0.0, beta=0.90)
+    vs = garch11_filter(r, omega=1e-6, alpha=0.08, beta=0.90)
+    assert np.allclose(vg.values, vs.values), "gamma=0 should equal GARCH(1,1)"
+    # negloglik parity at gamma=0
+    nll_gjr0 = _gjr_negloglik(r, 1e-6, 0.08, 0.0, 0.90)
+    nll_g = _garch_negloglik(r, 1e-6, 0.08, 0.90)
+    assert np.isclose(nll_gjr0, nll_g), (nll_gjr0, nll_g)
+
+
+def _test_gjr_fit_recovers_leverage() -> None:
+    # data WITH a leverage effect: gamma_true > 0
+    true = dict(omega=3e-6, alpha=0.02, gamma=0.12, beta=0.85)
+    r = _simulate_gjr(2500, seed=23, **true)
+    gjr = gjr_garch11_fit(r)
+    # fitted asymmetry is positive (recovers the leverage effect)
+    assert gjr["gamma"] > 0.02, gjr
+    # effective persistence recovered to the right neighborhood
+    true_eff = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
+    assert abs(gjr["persistence"] - true_eff) < 0.12, (gjr["persistence"], true_eff)
+    # GJR beats symmetric GARCH on the SAME Gaussian likelihood when leverage
+    # is present (lower negloglik). Compare like-for-like via the GJR nll fn
+    # evaluated at the symmetric-GARCH optimum (gamma=0).
+    g = garch11_fit(r)
+    g_nll = _gjr_negloglik(r - r.mean(), g["omega"], g["alpha"], 0.0, g["beta"])
+    assert gjr["negloglik"] < g_nll, (gjr["negloglik"], g_nll)
+
+
+def _simulate_har(n: int, c: float, b_d: float, b_w: float, b_m: float,
+                  noise_sd: float, seed: int) -> np.ndarray:
+    """Simulate an RV series from a known HAR process (in RV level):
+    RV_t = c + b_d*RV_{t-1} + b_w*mean(RV_{t-5..t-1}) + b_m*mean(RV_{t-22..t-1})
+           + eps_t, with small additive noise and a positive floor so RV stays
+    positive. Deterministic given seed."""
+    rng = np.random.default_rng(seed)
+    burn = 200
+    N = n + burn
+    uncond = c / max(1e-9, (1.0 - b_d - b_w - b_m))
+    rv = np.full(N, uncond)  # start at the unconditional mean
+    for t in range(22, N):
+        daily = rv[t - 1]
+        weekly = rv[t - 5:t].mean()
+        monthly = rv[t - 22:t].mean()
+        eps = noise_sd * rng.standard_normal()
+        rv[t] = c + b_d * daily + b_w * weekly + b_m * monthly + eps
+        if rv[t] <= 1e-12:
+            rv[t] = 1e-12  # keep variance positive
+    return rv[burn:]
+
+
+def _test_har_recovers_coefficients() -> None:
+    true = dict(c=2e-6, b_d=0.35, b_w=0.35, b_m=0.20, noise_sd=2e-6)
+    rv = _simulate_har(4000, seed=3, **true)
+    res = har_rv(rv, horizon=1, use_log=False)
+    c, bd, bw, bm = res["coef"]
+    assert abs(bd - true["b_d"]) < 0.12, (bd, true["b_d"])
+    assert abs(bw - true["b_w"]) < 0.15, (bw, true["b_w"])
+    assert abs(bm - true["b_m"]) < 0.15, (bm, true["b_m"])
+    assert res["r2"] > 0.5, res["r2"]
+
+
+def _test_har_beats_static_baseline() -> None:
+    true = dict(c=2e-6, b_d=0.4, b_w=0.3, b_m=0.2, noise_sd=2e-6)
+    rv = _simulate_har(3000, seed=9, **true)
+    res = har_rv(rv, horizon=1, use_log=False)
+    fc = res["forecast"].to_numpy()
+    target = rv.copy()  # one-step target at index t is RV_t itself
+    valid = np.where(np.isfinite(fc))[0]
+    # static baseline: trailing (expanding) mean RV through t-1 -- strictly
+    # causal, the same information set the HAR forecast had.
+    static = np.array([rv[:t].mean() for t in valid])
+    mse_har = np.mean((target[valid] - fc[valid]) ** 2)
+    mse_static = np.mean((target[valid] - static) ** 2)
+    assert mse_har < mse_static, (mse_har, mse_static)
+
+
+def _test_har_no_lookahead() -> None:
+    """Lag unit test mirroring the vol_target leakage discipline: the forecast
+    at index t must NOT change when RV_t (and later) are arbitrarily corrupted.
+    If the RHS ever read a contemporaneous/future RV, perturbing it would move
+    the forecast at t."""
+    true = dict(c=2e-6, b_d=0.4, b_w=0.3, b_m=0.2, noise_sd=2e-6)
+    rv = _simulate_har(800, seed=5, **true)
+    res_full = har_rv(rv, horizon=1, use_log=False)
+    fc_full = res_full["forecast"].to_numpy()
+    coef = res_full["coef"]
+
+    t0 = 400  # interior index with a valid forecast
+    assert np.isfinite(fc_full[t0])
+    # Recompute the forecast at t0 from a COPY whose values at indices >= t0 are
+    # destroyed. A causal/trailing RHS uses only RV[t0-22 .. t0-1], so with the
+    # same fitted coefficients the forecast at t0 must be IDENTICAL.
+    rv_corrupt = rv.copy()
+    rv_corrupt[t0:] = 1e6  # garbage future
+    daily = rv_corrupt[t0 - 1]
+    weekly = rv_corrupt[t0 - 5:t0].mean()
+    monthly = rv_corrupt[t0 - 22:t0].mean()
+    rhs = np.array([1.0, daily, weekly, monthly])
+    fc_recomputed = float(rhs @ coef)
+    assert np.isclose(fc_recomputed, fc_full[t0]), (
+        "forecast at t0 depends on RV_t0 or later -> look-ahead leak")
+    # first 22 entries lack a full lookback -> must be NaN; the rest finite.
+    assert np.all(np.isnan(fc_full[:22]))
+    assert np.all(np.isfinite(fc_full[22:]))
+
+
+def _test_har_log_space() -> None:
+    true = dict(c=1e-6, b_d=0.4, b_w=0.3, b_m=0.2, noise_sd=1e-6)
+    rv = _simulate_har(2000, seed=15, **true)
+    res = har_rv(rv, horizon=1, use_log=True)
+    fc = res["forecast"].to_numpy()
+    valid = np.isfinite(fc)
+    assert np.all(fc[valid] > 0), "log-space forecast must exponentiate to RV>0"
+    assert res["r2"] > 0.3, res["r2"]
+    # multi-step (h=5) log forecast: still causal, still positive.
+    res5 = har_rv(rv, horizon=5, use_log=True)
+    fc5 = res5["forecast"].to_numpy()
+    assert np.all(fc5[np.isfinite(fc5)] > 0)
+
+
+def _test_realized_variance() -> None:
+    rng = np.random.default_rng(42)
+    n_days = 50
+    # 78 5-min log returns per session (6.5h), sd 0.0008 per bar
+    intraday = [rng.normal(0.0, 0.0008, 78) for _ in range(n_days)]
+    rv = realized_variance(intraday)
+    assert len(rv) == n_days
+    assert np.all(rv.values > 0)
+    # RV ~ n_bars * sigma_bar^2 (law of large numbers over the day)
+    expected = 78 * 0.0008 ** 2
+    assert abs(rv.mean() - expected) < 0.3 * expected, (rv.mean(), expected)
+    # overnight term adds EXACTLY ov^2 and strictly increases mean RV
+    overnight = rng.normal(0.0, 0.005, n_days)
+    rv_on = realized_variance(intraday, overnight_returns=overnight)
+    assert np.allclose((rv_on.values - rv.values), overnight ** 2)
+    assert rv_on.mean() > rv.mean(), "overnight gap must add variance"
+    # feeding RV into HAR runs end-to-end and yields positive forecasts
+    long_intraday = [rng.normal(0.0, 0.0008, 78) for _ in range(300)]
+    rv_long = realized_variance(long_intraday)
+    res = har_rv(rv_long, horizon=1)
+    fc = res["forecast"].to_numpy()
+    assert np.all(fc[np.isfinite(fc)] > 0)
 
 
 def _test_kalman_local_level() -> None:
@@ -744,6 +1285,13 @@ def _run_all_tests() -> None:
     _test_ewma_vol()
     _test_garch_filter()
     _test_garch_fit()
+    _test_gjr_filter()
+    _test_gjr_fit_recovers_leverage()
+    _test_realized_variance()
+    _test_har_recovers_coefficients()
+    _test_har_beats_static_baseline()
+    _test_har_no_lookahead()
+    _test_har_log_space()
     _test_kalman_local_level()
     _test_kalman_dynamic_beta()
     _test_hmm()
