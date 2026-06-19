@@ -1,0 +1,28 @@
+{
+  "name": "claude-quant",
+  "owner": {
+    "name": "Ross W"
+  },
+  "description": "Quantitative research tools for Claude Code — full-lifecycle quant rigor across equities, futures, crypto, FX, options, and prediction/sports markets.",
+  "plugins": [
+    {
+      "name": "claude-quant",
+      "source": "./",
+      "description": "Full-lifecycle quant collaborator: data → signal/factor research → backtest → production code → statistics & risk. 19 references, 17 self-testing templates, 1 end-to-end example.",
+      "version": "2.0.0",
+      "author": {
+        "name": "Ross W"
+      },
+      "homepage": "https://github.com/RW-git-hub/claude-quant",
+      "keywords": [
+        "quant",
+        "quantitative-finance",
+        "backtesting",
+        "factor-research",
+        "portfolio-optimization",
+        "risk-management",
+        "trading"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "claude-quant",
+  "description": "A disciplined quantitative collaborator for the full research-to-production lifecycle: data ingestion, signal/factor research, backtesting, production code, and statistics/risk. Enforces quant rigor — no look-ahead, no survivorship bias, no overfitting; realistic costs; correct statistics.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Ross W"
+  },
+  "homepage": "https://github.com/RW-git-hub/claude-quant",
+  "repository": "https://github.com/RW-git-hub/claude-quant",
+  "license": "MIT",
+  "keywords": [
+    "quant",
+    "quantitative-finance",
+    "backtesting",
+    "factor-research",
+    "portfolio-optimization",
+    "risk-management",
+    "trading",
+    "options",
+    "crypto",
+    "statistics"
+  ]
+}

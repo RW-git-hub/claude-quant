@@ -1,0 +1,17 @@
+# Local Claude Code settings (machine-specific, not part of the published plugin)
+.claude/
+
+# Design docs / internal specs (not shipped with the plugin)
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
