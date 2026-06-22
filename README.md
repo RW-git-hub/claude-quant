@@ -10,6 +10,11 @@ backtest fantasy — no look-ahead, no survivorship bias, no overfitting, realis
 correct statistics. Every code template is **execution-verified** (its self-tests run
 green) and every reference was adversarially fact-checked.
 
+> **Scope.** This is a **methodology + scaffolding** layer — rigor, references, and
+> correct, self-testing templates you adapt to your own data and venue. It is not a
+> trading system, a data feed, or a broker connection: the live-trading pieces are
+> checklists and state-machine descriptions, not a runnable OMS.
+
 ## Install (Claude Code)
 
 ```
@@ -29,12 +34,26 @@ This plugin ships the `claude-quant` skill, **13 focused quick-draw skills**, an
 - **`references/`** — 19 on-demand deep-dives (factor research, transaction costs, ML for
   alpha, derivatives, stat-arb, portfolio optimization, microstructure, regimes,
   robustness, crypto/DeFi, risk management, live trading, prediction/sports markets, …)
-- **`templates/`** — 17 correct, self-testing starting points (numpy/pandas)
+- **`templates/`** — 19 correct, self-testing starting points (numpy/pandas)
 - **`examples/end_to_end.py`** — a full worked pipeline: data → factor → portfolio →
   costs → metrics → cross-validation
 
 See [`skills/claude-quant/README.md`](skills/claude-quant/README.md) for the full layout
 and the verification commands.
+
+## Which layer do I get?
+
+All three share the same Iron Laws and templates — they differ in weight and shape:
+
+- **The `claude-quant` skill** activates on any quant task and routes you to the right
+  reference + template. Reach for it when the job spans steps (research → backtest →
+  validate) or you're not sure which tool you need.
+- **A quick-draw skill** fires on one specific job ("compute the deflated Sharpe",
+  "devig this line") and points straight at the relevant template — lighter than
+  loading the full skill.
+- **A subagent** handles a focused, self-contained job end-to-end in its own context
+  ("audit my backtest for leakage", "is this overfit?") and returns a verdict rather
+  than a running conversation.
 
 ## Agents
 
@@ -90,8 +109,11 @@ tight playbooks that fire on a specific job and point you at the right template:
 
 ## Verify
 
+Running the templates needs only Python with **numpy + pandas** (the executed templates
+use nothing else): `pip install -r skills/claude-quant/requirements.txt`.
+
 ```
-python skills/claude-quant/templates/run_all_tests.py   # every template's self-tests
+python skills/claude-quant/templates/run_all_tests.py   # every template's self-tests (19/19)
 python skills/claude-quant/examples/end_to_end.py        # full worked pipeline, self-checked
 ```
 

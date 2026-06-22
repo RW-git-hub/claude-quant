@@ -1,0 +1,16 @@
+# claude-quant — Python dependencies
+#
+# CORE (required): everything needed to RUN the templates, the end-to-end example,
+# and templates/run_all_tests.py. Every self-testing template under templates/ imports
+# only numpy + pandas (plus the Python standard library: math, statistics, itertools,
+# dataclasses, typing). Verified green on numpy 1.26 / pandas 2.2 and on numpy 2.x /
+# pandas 3.0, so the floors below are deliberately permissive.
+numpy>=1.24
+pandas>=2.0
+
+# OPTIONAL (not needed to run the templates): the reference snippets under references/*.md
+# adapt these libraries — install them when you build on those patterns. Uncomment as needed.
+#   scipy>=1.10           # distributions, optimization, stats used in reference snippets
+#   statsmodels>=0.14     # OLS/Fama-MacBeth, ADF/Engle-Granger, GARCH in references
+#   scikit-learn>=1.3     # ML-for-alpha pipelines, calibration baselines in references
+#   pyarrow>=12           # parquet cache backend for data_loader.cached_parquet

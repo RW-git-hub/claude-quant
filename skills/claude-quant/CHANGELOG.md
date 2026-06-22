@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.1 — 2026-06-22
+
+Documentation-accuracy and packaging pass. No template logic changed; every
+self-test still runs green (**19/19** under `templates/run_all_tests.py`, verified
+on numpy 1.26 / pandas 2.2 and numpy 2.x / pandas 3.0).
+
+### Fixed — documentation accuracy
+- **Template count corrected to 19.** The README and `marketplace.json` said
+  "17 templates," but `templates/` ships 19, so both were corrected. (The 2.0.0 entry
+  below is left unedited as a historical record — 2.0.0 genuinely shipped 17 templates;
+  `calibration.py` and `overfitting.py` were added afterward, in the quick-draw-skills
+  release.) Those two had shipped but were absent from the SKILL.md router, the READMEs,
+  and the template list — so the skill never pointed at them. They are now documented
+  and routed:
+  - `overfitting.py` — Probability of Backtest Overfitting via CSCV (Bailey, Borwein,
+    López de Prado & Zhu 2017): `pbo_cscv`, `performance_degradation`, `build_perf_matrix`.
+  - `calibration.py` — probability calibration (numpy-only): reliability curve, ECE/MCE,
+    Murphy Brier decomposition, Platt scaling, and isotonic (PAVA) recalibration.
+- Removed the machine-specific absolute install path from `skills/claude-quant/README.md`.
+
+### Added — packaging
+- **`requirements.txt`** — the runtime dependency floor (numpy, pandas) needed to *run*
+  the templates/example, plus the optional scientific stack the reference snippets adapt.
+- **`.github/workflows/tests.yml`** — CI that runs `run_all_tests.py` and the end-to-end
+  example on a Python 3.11/3.12/3.13 matrix, so the "execution-verified" promise is
+  enforced on every push and catches numpy/pandas version drift.
+- Clarified scope (methodology + scaffolding, not a trading system or data feed) and the
+  "to *run* templates you need numpy + pandas" note in the READMEs; added a short
+  "broad skill vs. quick-draw skill vs. subagent" guide to the top-level README.
+
+### Added — tests
+- `data_loader.py` self-tests gained adversarial fixtures for messy real data: a
+  delisted name with no fundamental row (must stay NaN, never cross-symbol leak), an
+  all-NaN fundamental value (NaN propagates, no fabricated number), a symbol missing
+  from the corporate-action factor table (defaults to 1.0, no rows dropped), and a
+  non-session/holiday row sneaking into the feed (dropped by `align_to_sessions`).
+- `regime.py` self-tests gained adversarial fixtures: vol estimators stay finite on a
+  flat/all-zero window and under a lone extreme bar, non-finite input is rejected loudly
+  (not silently NaN-propagated), HAR-RV degrades gracefully on a too-short series, and a
+  flat series triggers no spurious CUSUM change point.
+
 ## 2.0.0 — 2026-06-19
 
 Expanded `claude-quant` from a 5-reference / 4-template core into a comprehensive,

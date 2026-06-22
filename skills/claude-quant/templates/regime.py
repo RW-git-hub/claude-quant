@@ -1281,6 +1281,49 @@ def _test_vol_target_scale() -> None:
     assert abs(sc["b"] - 0.5) < 1e-12
 
 
+def _test_adversarial_messy_data() -> None:
+    """Messy-real-data fixtures: the degenerate windows happy-path synthetic data
+    never exercises. Vol estimators must stay finite on a flat/constant window and
+    survive a lone extreme bar; non-finite input must be REJECTED loudly rather than
+    silently NaN-propagated; HAR must degrade gracefully on a too-short series; and a
+    flat series must not manufacture a spurious change point."""
+    # (a) constant / all-zero window: no divide-by-zero, no NaN/inf.
+    zeros = pd.Series(np.zeros(300))
+    assert np.all(np.isfinite(ewma_vol(zeros, lam=0.94).values)), "EWMA vol went non-finite on flat input"
+    assert float(ewma_vol(zeros, lam=0.94).iloc[-1]) == 0.0
+    vz = garch11_filter(np.zeros(300), omega=1e-6, alpha=0.08, beta=0.90)
+    assert np.all(vz.values > 0) and np.all(np.isfinite(vz.values)), "GARCH vol must stay positive on flat input"
+
+    # (b) a single 1000-sigma outlier bar: estimators stay finite (no overflow to inf/nan).
+    r_out = np.random.default_rng(0).normal(0.0, 0.01, 300)
+    r_out[150] = 10.0
+    assert np.all(np.isfinite(garch11_filter(r_out, omega=1e-6, alpha=0.08, beta=0.90).values))
+    assert np.all(np.isfinite(ewma_vol(pd.Series(r_out), lam=0.94).values))
+
+    # (c) non-finite input is rejected loudly -- silent NaN propagation would be the bug.
+    nan_series = pd.Series([0.01, np.nan, 0.02] * 50)
+    for fn in (lambda: ewma_vol(nan_series, lam=0.94),
+               lambda: garch11_filter(nan_series.to_numpy(), omega=1e-6, alpha=0.08, beta=0.90)):
+        try:
+            fn()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a NaN/inf return series must raise, not propagate")
+
+    # (d) HAR on a series shorter than its 22-day lookback degrades gracefully (raises)
+    #     instead of returning garbage coefficients from a rank-deficient fit.
+    try:
+        har_rv(np.full(10, 1e-4), horizon=1, use_log=False)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("HAR-RV must reject a too-short series")
+
+    # (e) a perfectly flat series must trigger no spurious CUSUM change point.
+    assert cusum_changepoints(pd.Series(np.zeros(100)), threshold=10.0, drift=0.5) == []
+
+
 def _run_all_tests() -> None:
     _test_ewma_vol()
     _test_garch_filter()
@@ -1297,6 +1340,7 @@ def _run_all_tests() -> None:
     _test_hmm()
     _test_cusum()
     _test_vol_target_scale()
+    _test_adversarial_messy_data()
     print("regime.py: all self-tests passed.")
 
 

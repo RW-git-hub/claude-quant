@@ -22,7 +22,7 @@ allowed-tools:
   - WebSearch
   - WebFetch
   - AskUserQuestion
-version: 2.0.0
+version: 2.0.1
 ---
 
 # Claude Quant
@@ -156,11 +156,13 @@ A full worked pipeline tying them together: `examples/end_to_end.py`.
 - `templates/pretrade_checks.py` — pre-trade risk gate (order/position/gross/collar/participation/kill-switch).
 - `templates/risk.py` — Cornish-Fisher & Monte-Carlo VaR, ES, Kupiec & Christoffersen backtests, stress.
 - `templates/robustness.py` — permutation tests, stationary bootstrap, White's Reality Check, parameter plateaus.
+- `templates/overfitting.py` — Probability of Backtest Overfitting via CSCV (Bailey–Borwein–López de Prado–Zhu): `pbo_cscv`, `performance_degradation`. Feed the per-period returns of **every** config you searched; PBO > 0.5 means picking the in-sample best is anti-predictive out-of-sample. Complements the Deflated Sharpe in `metrics.py`.
 
 **Pricing & specialized markets**
 - `templates/options.py` — Black-Scholes price + greeks + implied vol.
 - `templates/crypto_defi.py` — funding/basis, AMM constant-product, impermanent loss, liquidation price.
 - `templates/betting_markets.py` — odds conversion, devig (multiplicative/Shin/power), Kelly, Brier/log-loss, CLV.
+- `templates/calibration.py` — probability calibration (numpy-only): reliability curve, ECE/MCE, Murphy Brier decomposition, and Platt + isotonic recalibrators. Calibrate predicted probabilities — fit on a disjoint, purged fold — before turning them into Kelly stakes.
 
 ---
 
@@ -195,6 +197,11 @@ bt (event-driven). Reach for numba/Cython/Rust only for profiled hot loops.
 Methods are cross-asset (equities, futures/commodities, crypto, FX/rates/options)
 and horizon-aware (daily/swing and intraday primary; HFT/microstructure noted);
 references call out where an asset class or frequency differs.
+
+This skill is a **methodology + scaffolding** layer — the Iron Laws, references, and
+correct, self-testing templates you adapt to your own data and venue. It is not a
+trading system, a data feed, or a broker connection; the live-trading reference is
+checklists and state-machine descriptions, not a runnable OMS.
 
 When the task is ambiguous (asset class, frequency, data source, objective),
 ask **one** sharp clarifying question, then proceed with sensible defaults.

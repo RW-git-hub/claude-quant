@@ -139,4 +139,49 @@ if __name__ == "__main__":
     fd = make_available_date(fundamentals.drop(columns=["available_date"]), lag_days=45)
     assert (fd["available_date"] == pd.Timestamp("2022-12-31") + pd.Timedelta(days=45)).all()
 
+    # ----------------------------------------------------------------------- #
+    # Adversarial fixtures: the messy-real-data cases that clean synthetic     #
+    # frames never exercise (gaps, missing names, NaNs, holidays). These guard #
+    # the PIT / survivorship / corporate-action logic against silent leaks.    #
+    # ----------------------------------------------------------------------- #
+
+    # (a) Delisted name with NO fundamental row: pit_join must leave its columns
+    #     NaN -- never borrow another symbol's value, never raise.
+    prices_two = pd.DataFrame({
+        "date": list(dates) + list(dates),
+        "symbol": ["AAA"] * 10 + ["ZZZ"] * 10,
+        "close": np.r_[np.arange(100.0, 110.0), np.arange(50.0, 60.0)],
+    })
+    joined2 = pit_join(prices_two, fundamentals)        # fundamentals only covers AAA
+    zzz_eps = joined2.loc[joined2["symbol"] == "ZZZ", "eps"]
+    assert zzz_eps.isna().all(), "a name with no fundamental must stay NaN (no cross-symbol leak)"
+    aaa_after = joined2.loc[(joined2["symbol"] == "AAA") & (joined2["date"] >= "2023-01-09"), "eps"]
+    assert (aaa_after == 3.14).all(), "AAA must still resolve correctly alongside an unmatched name"
+
+    # (b) All-NaN fundamental value: the join propagates NaN rather than
+    #     fabricating a number (an honest downstream NaN beats a silent fill).
+    fund_nan = fundamentals.copy()
+    fund_nan["eps"] = np.nan
+    jn = pit_join(prices, fund_nan)
+    assert jn.loc[jn["date"] >= "2023-01-09", "eps"].isna().all(), "NaN fundamental must propagate"
+
+    # (c) Symbol missing from the corporate-action factor table: fillna(1.0)
+    #     leaves raw prices unadjusted instead of dropping rows or emitting NaN.
+    factors_partial = factors[factors["date"] < dates[-1]]   # last day's factor absent
+    adj2 = adjust_prices(prices, factors_partial)
+    last = adj2.loc[adj2["date"] == dates[-1]]
+    assert np.allclose(last["adj_close"], last["close"]), "missing adj_factor must default to 1.0"
+    assert len(adj2) == len(prices), "corporate-action join must not drop rows"
+
+    # (d) A non-session row (e.g. a holiday that sneaked into the feed) must be
+    #     dropped by align_to_sessions; valid sessions survive, order preserved.
+    holiday = pd.Timestamp("2023-01-16")    # not a session in `dates`
+    px_with_holiday = pd.concat(
+        [prices, pd.DataFrame({"date": [holiday], "symbol": ["AAA"], "close": [999.0]})],
+        ignore_index=True,
+    )
+    aligned = align_to_sessions(px_with_holiday, sessions=dates)
+    assert holiday not in set(aligned["date"]), "non-session row must be dropped"
+    assert len(aligned) == len(prices), "every real session must survive alignment"
+
     print("data_loader.py: all self-tests passed")

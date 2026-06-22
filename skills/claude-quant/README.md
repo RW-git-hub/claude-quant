@@ -40,8 +40,8 @@ claude-quant/
 │   ├── run_all_tests.py          # Runs every template's self-tests (CI gate)
 │   ├── metrics.py · validation.py · backtest_skeleton.py · data_loader.py
 │   ├── factor_research.py · pairs_trading.py · portfolio.py · regime.py · labeling.py
-│   ├── costs.py · execution.py · pretrade_checks.py · risk.py · robustness.py
-│   └── options.py · crypto_defi.py · betting_markets.py
+│   ├── costs.py · execution.py · pretrade_checks.py · risk.py · robustness.py · overfitting.py
+│   └── options.py · crypto_defi.py · betting_markets.py · calibration.py
 └── examples/
     └── end_to_end.py             # Full worked pipeline: data→factor→portfolio→costs→metrics→CV
 ```
@@ -54,15 +54,18 @@ Copy this directory to your personal skills folder so Claude Code activates it:
 ~/.claude/skills/claude-quant/
 ```
 
-On this machine: `C:\Users\RossW\.claude\skills\claude-quant\`. After copying, the
+(On Windows: `%USERPROFILE%\.claude\skills\claude-quant\`.) After copying, the
 skill is discoverable via its trigger phrases (backtest, factor research, Sharpe,
 point-in-time, walk-forward, portfolio construction, pairs trading, options greeks,
 VaR, Polymarket / sports betting, …).
 
+To **run** the templates (rather than read them as scaffolding) you need a Python
+environment with numpy + pandas — `pip install -r requirements.txt`.
+
 ## Verify
 
 ```
-python templates/run_all_tests.py    # every template's self-tests (17/17 pass)
+python templates/run_all_tests.py    # every template's self-tests (19/19 pass)
 python examples/end_to_end.py         # full worked pipeline, self-checked
 ```
 
@@ -70,4 +73,9 @@ python examples/end_to_end.py         # full worked pipeline, self-checked
 
 All major asset classes (equities, futures/commodities, crypto, FX/rates/options)
 plus prediction & sports markets; daily/swing and intraday primary (HFT noted);
-modern Python stack. 19 references, 17 self-testing templates, 1 end-to-end example.
+modern Python stack. 19 references, 19 self-testing templates, 1 end-to-end example.
+
+This is a **methodology + scaffolding** layer — rigor (the Iron Laws), references,
+and correct, self-testing templates you adapt to your own data and venue. It is not
+a trading system, a data feed, or a broker connection; the live-trading material is
+checklists and state-machine descriptions, not a runnable OMS.
