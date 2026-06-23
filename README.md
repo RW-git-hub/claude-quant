@@ -1,5 +1,7 @@
 # claude-quant
 
+[![tests](https://github.com/RW-git-hub/claude-quant/actions/workflows/tests.yml/badge.svg)](https://github.com/RW-git-hub/claude-quant/actions/workflows/tests.yml)
+
 A **Claude Code plugin** that turns Claude into a disciplined quantitative collaborator
 across the full lifecycle — **data → signal/factor research → backtesting → production
 code → statistics & risk** — plus specialized markets (options/derivatives, crypto/DeFi,

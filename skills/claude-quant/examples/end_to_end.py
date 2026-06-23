@@ -9,9 +9,14 @@ Flow:  build a panel  ->  evaluate the factor (IC, quantile spread)
 It uses ONLY the shipped templates (no network, no external data) so it runs
 anywhere numpy/pandas are installed. Run:  python examples/end_to_end.py
 
-This is a teaching integration example, not a production strategy: the factor's
-predictive power is planted into the synthetic data so the plumbing is easy to
-verify end to end.
+This is a teaching integration example on SYNTHETIC data with a PLANTED signal: it
+shows how the templates wire together and is NOT a performance claim. The factor's
+predictive power is planted so the plumbing is easy to verify end to end. Even the
+deliberately modest Sharpe it prints is optimistic -- the toy panel has an iid
+cross-section with no return correlation, no IC decay, and no capacity / market-
+impact limits, evaluated in a single in-sample pass. Those are exactly the frictions
+that deflate real strategies; a deployable edge would also need deflated stats
+(metrics.deflated_sharpe_ratio), out-of-sample validation, and a trial budget.
 """
 from __future__ import annotations
 
@@ -32,14 +37,18 @@ import portfolio                   # noqa: E402
 import validation                  # noqa: E402
 
 
-def build_panel(T: int = 500, N: int = 30, alpha: float = 0.01,
+def build_panel(T: int = 500, N: int = 30, alpha: float = 0.001,
                 noise: float = 0.02, seed: int = 0):
     """Synthetic panel with a planted cross-sectional signal.
 
     Returns (factor_df, fwd_ret_df): both indexed by date x asset, point-in-time
     aligned so fwd_ret.loc[t] is the return earned AFTER the factor is observed at t.
     The forward return is alpha * (cross-sectional z-score of the factor) + noise,
-    so the factor genuinely (but noisily) ranks forward returns.
+    so the factor genuinely (but noisily) ranks forward returns. The default
+    alpha/noise are deliberately tuned to a REALISTIC information coefficient
+    (IC ~0.03) -- a believable factor, not an oracle. Crank `alpha` up and the IC
+    and Sharpe balloon to fantasy levels; that is exactly the tell of a leaky or
+    over-fit study, so keep it modest.
     """
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2018-01-01", periods=T, freq="B")
@@ -84,6 +93,9 @@ def main() -> int:
     print(f"  net ann ret  : {metrics.annualized_return(net_ret):.1%}")
     print(f"  net max DD   : {metrics.max_drawdown(net_ret):.1%}")
     print(f"  avg turnover : {turnover.mean():.2f}/day")
+    print("  NOTE: synthetic data + planted signal -- illustrative plumbing, NOT a")
+    print("        performance claim. Even this Sharpe is optimistic (iid cross-section,")
+    print("        no return correlation / IC decay / capacity); see the module docstring.")
 
     # --- 5. Leak-free CV split + covariance shrinkage ------------------------
     pk = validation.PurgedKFold(n_splits=5, embargo_pct=0.02, label_horizon=1)
@@ -98,11 +110,12 @@ def main() -> int:
     print(f"  min-var wts  : sum={w_mv.sum():.4f}, n={w_mv.size}")
 
     # --- self-checks ----------------------------------------------------------
-    assert ic_stats["mean_ic"] > 0.05, ic_stats
-    assert ic_stats["t_stat"] > 3.0, ic_stats
+    assert ic_stats["mean_ic"] > 0.02, ic_stats          # realistic planted IC (~0.03)
+    assert ic_stats["t_stat"] > 2.5, ic_stats
     assert qstats["mean_spread"] > 0.0, qstats
     assert np.isfinite(g_sharpe) and np.isfinite(n_sharpe)
     assert g_sharpe > n_sharpe, "costs must reduce net Sharpe"
+    assert n_sharpe < 5.0, "net Sharpe implausibly high for a demo — keep the planted signal modest"
     assert overlap == 0, "purged CV train/test must not overlap"
     assert abs(w_mv.sum() - 1.0) < 1e-8
     print("\nend_to_end.py: pipeline ran and all self-checks passed.")

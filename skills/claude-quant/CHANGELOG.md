@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.2 — 2026-06-23
+
+Polish pass on the flagship example and credibility signals.
+
+### Changed
+- **`examples/end_to_end.py` now prints realistic numbers.** The planted signal was far
+  too strong (IC ≈ 0.42, gross Sharpe ≈ 40) — fantasy-tier output that undercut the
+  skill's whole "real edge vs. backtest fantasy" thesis (a skeptical reader sees Sharpe 40
+  and assumes leakage). The synthetic factor now plants a realistic IC (~0.03, t ≈ 3.8),
+  yielding gross Sharpe ≈ 2.9 / net ≈ 1.7 after costs, with costs visibly biting. The run
+  prints an explicit caveat that this is synthetic plumbing on a planted signal — **not a
+  performance claim** — and that even that Sharpe is optimistic (iid cross-section, no
+  return correlation / IC decay / capacity). A self-check now guards against re-inflating
+  the demo Sharpe (`net Sharpe < 5`).
+
+### Added
+- CI status badge on the top-level README, linking to the GitHub Actions `tests` workflow.
+
 ## 2.0.1 — 2026-06-22
 
 Documentation-accuracy and packaging pass. No template logic changed; every
