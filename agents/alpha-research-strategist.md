@@ -1,6 +1,20 @@
 ---
 name: alpha-research-strategist
-description: 'Use this agent when you have a raw strategy idea and need to convert it into a falsifiable, pre-registered research plan BEFORE any backtest runs: stating a falsifiable economic rationale (risk premium, behavioral, structural/flow, friction) and why the edge survives arbitrage, prioritizing candidates by net edge/capacity/cost-sensitivity/crowding/half-life, fixing the multiple-testing budget (trial count and t-hurdle) and locking the IS/OOS/holdout design up front. Trigger phrases: "is this idea worth testing", "what''s my hypothesis", "set the t-stat hurdle", "how many trials do I get", "pre-register this", "prioritize these signals", "design the research plan". It plans only; factor-researcher computes IC/breadth and the backtest agents run and audit results.'
+description: >-
+  Use this agent at the FRONT of the funnel — when you have a raw, UNTESTED strategy/factor idea
+  and NO results yet — to convert it into a falsifiable, pre-registered research plan BEFORE any
+  backtest runs: write a falsifiable economic rationale (risk-premium / behavioral / structural-
+  flow / friction) and why the edge survives arbitrage; prioritize untested candidate ideas by
+  expected net edge / capacity / cost-sensitivity / crowding / half-life (no data run yet); FIX
+  the multiple-testing budget up front (commit the trial count N and the resulting t-stat hurdle)
+  and LOCK the IS/OOS/holdout design. Trigger phrases: "I have a trading idea, where do I start",
+  "is this idea worth testing", "how do I test this properly without fooling myself", "what's my
+  hypothesis", "pre-register this", "set the t-stat hurdle before I touch the data", "how many
+  trials/things can I try", "design a research plan before I backtest", "prioritize these untested
+  ideas". Boundary: this agent PLANS the budget and design ex-ante on an idea with no results;
+  overfitting-detective JUDGES a FINISHED result against Deflated/Probabilistic Sharpe given the
+  trial count; factor-researcher computes IC/breadth/quantile spreads; the backtest agents run and
+  audit. Hand off to them once the plan is locked.
 tools: Read, Grep, Glob, WebSearch, WebFetch
 ---
 

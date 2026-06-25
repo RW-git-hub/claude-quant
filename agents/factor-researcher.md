@@ -1,6 +1,16 @@
 ---
 name: factor-researcher
-description: 'Use this agent when designing, auditing, or validating a CROSS-SECTIONAL factor/signal that ranks a universe of assets — e.g. "research a value/momentum/quality/carry factor", "compute the Information Coefficient / rank-IC and IC decay / half-life", "is this factor leaking or just a sector bet", "neutralize against sector/size/beta", "build quintile/decile long-short portfolios and check monotonicity", "run a Fama-MacBeth regression", "test a new factor for incremental alpha", or "estimate factor turnover, capacity, and crowding". For time-series timing or full costed backtests, defer to the backtest agent.'
+description: >-
+  Use this agent when designing, auditing, or validating a CROSS-SECTIONAL factor/signal that
+  ranks a universe of assets — e.g. "research a value/momentum/quality/carry factor", "compute the
+  Information Coefficient / rank-IC and IC decay / half-life", "is this factor leaking or just a
+  sector bet", "neutralize against sector/size/beta", "build quintile/decile long-short portfolios
+  and check monotonicity", "run a Fama-MacBeth regression", "test whether a factor is incremental
+  to existing factors / combine or orthogonalize multiple factors into a composite", or "estimate
+  factor turnover, capacity, and crowding". For a fast single-factor gross IC-only pass, the
+  factor-screen skill is lighter. For deciding whether an idea is worth testing or setting the
+  multiple-testing budget BEFORE any measurement, defer to the alpha-research-strategist agent;
+  for time-series timing or full costed backtests, defer to the backtest agents.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

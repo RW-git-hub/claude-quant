@@ -1,6 +1,17 @@
 ---
 name: portfolio-architect
-description: 'Use this agent when the user has signals/expected-returns and/or a covariance estimate and needs portfolio weights, or wants to choose, diagnose, or stabilize a portfolio-construction method. Triggers include "portfolio construction", "mean-variance / Markowitz optimize", "minimum-variance / max-Sharpe / tangency", "risk parity / equal risk contribution / ERC", "hierarchical risk parity / HRP", "Black-Litterman", "shrink the covariance / Ledoit-Wolf", "vol-target this book", "add turnover / leverage / box / sector constraints", or "why are my optimizer weights so extreme/unstable/concentrated".'
+description: >-
+  Use this agent when the user has signals/expected-returns and/or a covariance estimate and needs
+  portfolio weights, wants to allocate capital across assets or strategies/sleeves, or wants to
+  choose, diagnose, or stabilize a portfolio-construction method. Triggers include "allocate
+  capital across these assets/strategies", "what weights should I hold", "combine signals into a
+  portfolio", "split capital across sleeves", "portfolio construction", "mean-variance / Markowitz
+  optimize", "minimum-variance / max-Sharpe / tangency", "risk parity / equal risk contribution /
+  ERC" (covariance-aware, larger N), "hierarchical risk parity / HRP", "Black-Litterman", "shrink
+  the covariance / Ledoit-Wolf", "vol-target a constructed book", "add
+  turnover / leverage / box / sector constraints", or "why are my optimizer weights so
+  extreme/unstable/concentrated". For quick single-position sizing or simple small-N inverse-vol
+  with no optimizer, use the position-sizing skill.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

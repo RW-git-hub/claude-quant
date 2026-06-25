@@ -34,7 +34,7 @@ def make_available_date(fundamentals: pd.DataFrame, period_end: str = "period_en
 
 def pit_join(prices: pd.DataFrame, fundamentals: pd.DataFrame,
              price_date: str = "date", avail_date: str = "available_date",
-             by: str = "symbol") -> pd.DataFrame:
+             by: str = "symbol", allow_exact_matches: bool = True) -> pd.DataFrame:
     """Attach the most recent fundamental KNOWN as of each price date.
 
     `fundamentals[avail_date]` MUST be when the value became public (announcement
@@ -43,12 +43,16 @@ def pit_join(prices: pd.DataFrame, fundamentals: pd.DataFrame,
     merge_asof(direction='backward') = "last value at or before this date" = PIT.
     Any other direction ('forward'/'nearest') leaks the future. Both frames must
     be sorted by the as-of key.
+
+    `allow_exact_matches` (default True) attaches a value whose availability date
+    equals the price date. Set False when an announcement timestamped at the close
+    must not be tradable until the next bar (strict same-bar exclusion).
     """
     p = prices.sort_values(price_date)
     f = fundamentals.sort_values(avail_date)
     return pd.merge_asof(
         p, f, left_on=price_date, right_on=avail_date, by=by,
-        direction="backward", allow_exact_matches=True,
+        direction="backward", allow_exact_matches=allow_exact_matches,
     )
 
 
@@ -183,5 +187,13 @@ if __name__ == "__main__":
     aligned = align_to_sessions(px_with_holiday, sessions=dates)
     assert holiday not in set(aligned["date"]), "non-session row must be dropped"
     assert len(aligned) == len(prices), "every real session must survive alignment"
+
+    # (e) allow_exact_matches=False: a value timestamped EXACTLY at the price date is
+    #     not attached that bar (strict same-bar exclusion), only strictly after.
+    strict = pit_join(prices, fundamentals, allow_exact_matches=False)
+    assert strict.loc[strict["date"] == "2023-01-09", "eps"].isna().all(), \
+        "exact-date value must be excluded when allow_exact_matches=False"
+    assert (strict.loc[strict["date"] > "2023-01-09", "eps"] == 3.14).all(), \
+        "value must attach strictly after its availability date"
 
     print("data_loader.py: all self-tests passed")

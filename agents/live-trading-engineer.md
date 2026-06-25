@@ -1,6 +1,22 @@
 ---
 name: live-trading-engineer
-description: 'Use this agent when taking a validated strategy live or hardening production trading infrastructure: designing or auditing an OMS/EMS order-lifecycle state machine, idempotent client order IDs, ack/fill/reject/partial-fill handling, FIX/REST/WebSocket reconnect resync, position/cash/PnL reconciliation against the venue, kill switches and circuit breakers, exchange-calendar/clock/corporate-action safety, or deploy and paper-to-canary runbooks. Triggers: "go live", "OMS", "reconcile with the broker", "handle partial fills", "idempotent orders", "kill switch", "we double-sent on reconnect", "phantom position". For limit sizing/portfolio risk use risk-manager; for slippage/TCA use execution-cost-analyst; for the backtest use backtest-auditor — this agent owns the live order path and venue reconciliation.'
+description: >-
+  Use this agent when deploying a validated strategy to production / taking it live, or hardening
+  live trading infrastructure: designing or auditing an OMS/EMS (order management system) order-
+  lifecycle state machine, idempotent client order IDs, ack/fill/reject/partial-fill handling,
+  FIX/REST/WebSocket reconnect resync (incl. crypto-exchange websocket reconnect), broker/exchange
+  API integration (FIX, Alpaca, IBKR, CCXT/Binance), order routing, paper trading before go-live,
+  position/cash/PnL reconciliation against the venue, kill switches and circuit breakers,
+  exchange-calendar/clock/corporate-action safety, or deploy and paper-to-canary runbooks.
+  Triggers: "go live", "deploy my trading strategy", "take this strategy live", "production
+  trading system/bot", "paper trading", "OMS", "order routing", "connect to broker API / Alpaca /
+  IBKR / CCXT", "reconcile with the broker", "handle partial fills", "idempotent orders", "kill
+  switch", "we double-sent on reconnect", "phantom position". Boundaries: for what the risk LIMITS
+  should be and portfolio sizing use risk-manager; for slippage/market-impact/TCA and execution
+  quality use execution-cost-analyst; for the backtest and look-ahead validation use backtest-
+  auditor; for decomposing WHY live P&L diverged from backtest (allocation/selection, paper-vs-
+  live attribution) use performance-attribution-analyst. This agent owns the live order path,
+  fill/latency mechanics, and venue reconciliation.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

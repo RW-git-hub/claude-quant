@@ -1,6 +1,17 @@
 ---
 name: overfitting-detective
-description: 'Use this agent when a quant has a backtest or live result and needs to know whether it is a genuine edge or a multiple-testing artifact before risking capital — e.g. "is this strategy overfit?", "compute the Deflated/Probabilistic Sharpe", "I tried 400 parameter combos and the best Sharpe is 2.1, is it real?", "run a permutation test / stationary bootstrap on this equity curve", "does this sit on a parameter plateau or a lone spike?", "what''s the deflated Sharpe after multiple testing?", or "give me an honest confidence interval on this Sharpe."'
+description: >-
+  Use this agent when a quant has a backtest or live result and needs to know whether it is a
+  genuine edge or a multiple-testing/selection artifact before risking capital — e.g. "is this
+  strategy overfit / curve-fit / data-mined / data-snooped / p-hacked?", "is this edge real or
+  just data-mining?", "compute the Deflated/Probabilistic Sharpe", "compute the PBO / probability
+  of backtest overfitting (CSCV)", "I tried 400 parameter combos and the best Sharpe is 2.1, is it
+  real?", "run a permutation test / stationary bootstrap on this equity curve", "does this sit on
+  a parameter plateau or a lone spike?", "what's the deflated Sharpe after multiple testing?", or
+  "give me an honest confidence interval on this Sharpe." This is the statistical-verdict agent;
+  for mechanical look-ahead/leakage/survivorship/cost bugs in the code or methodology, that's
+  backtest-auditor, and for a quick metrics-only block (including a deflated-Sharpe line) use the
+  performance-metrics skill.
 tools: Read, Grep, Glob, Bash
 ---
 

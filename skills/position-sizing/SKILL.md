@@ -1,6 +1,15 @@
 ---
 name: position-sizing
-description: 'Use when asked to "size positions/bets", "how much to bet", set a "Kelly fraction / fractional Kelly", "vol target / volatility targeting", "inverse-vol / inverse-variance weights", "risk parity / equal risk contribution / ERC", or apply "leverage / gross-net / exposure caps" — the quick how-much-to-allocate playbook (the broad claude-quant skill covers full portfolio construction and optimization).'
+description: >-
+  Quick how-much-to-allocate playbook on TRADING positions/strategies: map a request to ONE sizing
+  regime — set a "Kelly fraction / fractional Kelly" for a known trading edge, "vol target" a
+  single strategy stream, or compute simple "inverse-vol / inverse-variance weights" or small-N
+  "risk parity / ERC" with no return view — then apply "leverage / gross-net / exposure caps".
+  Consumes a causal vol estimate (producing the EWMA/GARCH/HAR-RV forecast itself is vol-
+  forecast). Hand off: covariance-grade portfolio construction (shrinkage, mean-
+  variance/Markowitz, Black-Litterman, HRP, unstable/concentrated weights, allocating across many
+  assets) -> portfolio-architect; sports/prediction-market odds, devig, or CLV bet sizing ->
+  devig-kelly-betting / prediction-market-analyst.
 allowed-tools:
   - Read
   - Write

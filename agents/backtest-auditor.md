@@ -1,6 +1,18 @@
 ---
 name: backtest-auditor
-description: 'Use this agent when you need an independent, read-only forensic audit of an existing backtest, strategy implementation, or described methodology for the bugs that fabricate alpha — look-ahead, leakage, survivorship, unrealistic costs, multiple-testing abuse. Triggers: "audit my backtest", "is this look-ahead/leakage?", "why is my Sharpe so high?", "this backtest looks too good — find the bug", "check this for survivorship bias", "are my costs realistic?", "did I reuse the test set?", "review this trading code for overfitting", "is my vol-targeting leaking?".'
+description: >-
+  Use this agent for an independent, read-only forensic audit of an EXISTING backtest, strategy
+  implementation, or described METHODOLOGY to find the design flaws that fabricate alpha — look-
+  ahead, leakage, survivorship, unrealistic costs, reused test sets. It is the first-responder
+  triage when a result looks too good but you don't yet know which bug: it pinpoints the disease
+  and cites the specialist for the deep dive. Triggers: "audit my backtest", "is this look-
+  ahead/leakage?", "why is my Sharpe so high?", "this backtest looks too good — find the bug",
+  "check this for survivorship bias", "are my costs realistic?", "did I reuse the test set?", "is
+  my vol-targeting leaking?". Handoffs: for the statistical multiple-testing verdict
+  (Deflated/Probabilistic Sharpe, permutation, PBO, "is this overfit/curve-fit after N trials?")
+  defer to overfitting-detective; for raw-data/PIT/survivorship/feed integrity defer to data-
+  integrity-sentinel; for pure code-level bugs (NaN/off-by-one/dtype, vectorize, profile) defer to
+  quant-code-reviewer.
 tools: Read, Grep, Glob, Bash
 ---
 

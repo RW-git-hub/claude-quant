@@ -1,6 +1,13 @@
 ---
 name: walk-forward-validation
-description: 'Use when asked to "walk-forward", "cross-validate a strategy", "purged k-fold / CPCV", "out-of-sample / OOS test", "is my CV leaking", "set the embargo", or "why is my Sharpe too good" — the quick OOS-validation playbook for leak-free time-series CV (the broad claude-quant skill is the full router).'
+description: >-
+  Use when asked to "walk-forward", "cross-validate a strategy", "purged k-fold / CPCV", "out-of-
+  sample / OOS test", "is my CV leaking", "set the embargo", or "why does my out-of-sample / walk-
+  forward Sharpe look too good (is the CV leaking)?" — the quick OOS-validation playbook for leak-
+  free time-series CV. For whether a result is a multiple-testing artifact after many trials
+  (deflated Sharpe, permutation, PBO verdict) use the overfitting-detective agent; for a leak-free
+  CV/CPCV that is one stage of an ML labeling pipeline use ml-alpha-engineer; the broad claude-
+  quant skill is the full router.
 allowed-tools:
   - Read
   - Write

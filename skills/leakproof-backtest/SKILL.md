@@ -1,6 +1,12 @@
 ---
 name: leakproof-backtest
-description: 'Use when asked to "backtest this signal/strategy", "vectorized backtest", "lag positions / avoid same-bar fills", "pnl = position.shift(1)*ret", "charge costs on turnover", or "is my backtest leaking?" — the quick-draw playbook to stand up ONE leak-free single- or cross-sectional vectorized backtest fast (not the broad claude-quant lifecycle router).'
+description: >-
+  Use when asked to "backtest this signal/strategy", "set up / wire up a vectorized backtest",
+  "lag positions / avoid same-bar fills", "pnl = position.shift(1)*ret", or "charge costs on
+  turnover" — the quick-draw playbook to BUILD ONE leak-free, full-fill, single- or cross-
+  sectional vectorized backtest fast. For auditing an EXISTING backtest for leaks use the
+  backtest-auditor agent; for event-driven / partial-fill / limit-order realism use the broad
+  claude-quant skill.
 allowed-tools:
   - Read
   - Write

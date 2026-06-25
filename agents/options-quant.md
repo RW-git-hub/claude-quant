@@ -1,6 +1,23 @@
 ---
 name: options-quant
-description: 'Use this agent when the user needs options or volatility-derivatives work: pricing (Black-Scholes-Merton, Black-76 on futures, CRR binomial trees for American/early-exercise, Longstaff-Schwartz Monte-Carlo), computing or auditing the full Greeks (delta, gamma, vega, theta, rho, vanna, volga, charm), solving implied vol or building/validating a no-arbitrage vol surface (smile, skew, term structure, SVI/SABR), or designing delta/gamma hedges and scenario P&L. Example asks: "price this call with dividends", "compute the greeks for my book", "solve implied vol from these quotes", "build a vol surface and check for arbitrage", "is this put-call parity violation real?", "simulate delta-hedging a straddle", "FX 25-delta risk reversal".'
+description: >-
+  Use this agent when the user needs options or volatility-derivatives work: pricing (Black-
+  Scholes-Merton, Black-76 on futures, CRR binomial trees for American/early-exercise, Longstaff-
+  Schwartz Monte-Carlo) including path-dependent / exotic payoffs (barrier, Asian, digital/binary,
+  lookback); computing or auditing the full Greeks (delta, gamma, vega, theta, rho, vanna, volga,
+  charm) for one instrument OR aggregating net delta/gamma/vega/theta across an options book;
+  solving implied vol or building/validating a no-arbitrage EQUITY/INDEX vol surface from a chain
+  (smile, skew, term structure, SVI/SABR/SSVI, calendar+butterfly arbitrage); or designing
+  delta/gamma hedges and running a spot-vol scenario grid (P&L under shocks to spot, vol, and
+  time). Example asks: "price this call with dividends", "price a knock-out barrier / Asian option
+  by Monte-Carlo", "compute the net greeks for my book", "solve implied vol from these quotes",
+  "build a vol surface and check for arbitrage", "is this put-call parity violation real?",
+  "simulate delta-hedging a straddle", "what's my book's P&L if spot drops 5% and vol pops 8pts".
+  Prices a single FX option and its Greeks, but defers FX-native smile construction, 25-delta
+  risk-reversal/butterfly quoting, and spot/forward/premium-adjusted delta-convention selection to
+  rates-fx-quant. Boundary: this agent prices/hedges the instrument and computes greeks;
+  volatility-strategist owns the P&L of vol as an asset class (VRP, VIX term structure, variance
+  swaps, dispersion).
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

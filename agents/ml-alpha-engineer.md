@@ -1,6 +1,23 @@
 ---
 name: ml-alpha-engineer
-description: 'Use this agent when building a machine-learning alpha pipeline that must not leak the future: financial labeling (fixed-horizon or triple-barrier with trailing-vol barriers + CUSUM event sampling), meta-labeling overlays that size or filter a primary signal, sample-uniqueness/concurrency weights and sequential bootstrap for overlapping labels, fractional differentiation, point-in-time feature engineering, purged+embargoed CV / CPCV path distributions, and leakage-aware (clustered MDA/SHAP) importance. Example asks: "label this with triple-barrier", "add meta-labeling", "set up purged CV / CPCV", "why is my ML backtest leaking", "make features stationary but keep memory". Boundary: this agent BUILDS the ML pipeline correctly; overfitting-detective JUDGES the resulting path distribution (deflated Sharpe / PBO).'
+description: >-
+  Use this agent to build or repair a machine-learning alpha pipeline that must not leak the
+  future. Covers both the de-Prado machinery and everyday ML-model engineering: training and
+  tuning regularized models for return/direction prediction (elastic-net, random forest, LightGBM
+  / gradient-boosted trees, and when deep nets are and aren't worth it on low-SNR tabular data),
+  point-in-time feature engineering, financial labeling (fixed-horizon or triple-barrier with
+  trailing-vol barriers + CUSUM event sampling), meta-labeling overlays that size or filter a
+  primary signal, sample-uniqueness/concurrency weights and sequential bootstrap for overlapping
+  labels, fractional differentiation for stationarity-with-memory, purged+embargoed CV / CPCV path
+  distributions for an ML model with overlapping labels, and leakage-aware (clustered MDA/SHAP)
+  importance. Example asks: "train a LightGBM/random forest to predict returns", "engineer
+  features for an ML alpha model without look-ahead", "tune hyperparameters without leaking",
+  "label this with triple-barrier", "add meta-labeling", "make features stationary but keep
+  memory", "fix the leak in my ML labeling/CV pipeline". Boundaries: for a STANDALONE leak-free
+  CV/embargo setup with no ML labeling, use walk-forward-validation; for read-only forensic
+  diagnosis of an existing backtest, use backtest-auditor; this agent BUILDS/REPAIRS the pipeline
+  and hands the resulting CPCV path distribution + trial count to overfitting-detective, which
+  JUDGES it (deflated Sharpe / PBO).
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

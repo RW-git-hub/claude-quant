@@ -1,6 +1,18 @@
 ---
 name: data-integrity-sentinel
-description: 'Use this agent when auditing a market-data pipeline or dataset for the silent errors that fake alpha BEFORE any backtest is trusted: point-in-time / as-of correctness, restated or back-filled fundamentals, survivorship and delisting bias, corporate-action adjustment, futures roll/continuation, return-type/compounding consistency, timezone and exchange-calendar alignment, duplicate/gap/out-of-order timestamps, and NaN/fill leakage. Triggers: "audit my data", "is this point-in-time", "check for look-ahead in my pipeline", "are my fundamentals restated/back-filled", "does my universe include delisted names", "is my continuous futures series right", "validate this dataset before I backtest", "why does my backtest look too good". Read-only; emits severity-ranked findings.'
+description: >-
+  Use this agent for a deep, independent, READ-ONLY forensic audit of a market-DATA pipeline or
+  DATASET (before any signal is computed) for the silent errors that fake alpha: point-in-time /
+  as-of correctness, restated or back-filled fundamentals, survivorship and delisting bias,
+  corporate-action adjustment, futures roll/continuation, return-type/compounding consistency,
+  timezone and exchange-calendar alignment, duplicate/gap/out-of-order timestamps, and NaN/fill
+  leakage. Triggers: "audit my data/dataset", "is this point-in-time", "check for look-ahead in my
+  data pipeline", "are my fundamentals restated/back-filled", "does my universe include delisted
+  names", "is my continuous futures series right", "validate this dataset before I backtest". If
+  the backtest looks too good, this agent traces it to a DATA bug (PIT/survivorship/corporate-
+  action) — for METHODOLOGY bugs (cost realism, multiple-testing, test-set reuse) use backtest-
+  auditor; for the fast inline gate use the data-pit-audit skill. Read-only; emits severity-ranked
+  file:line findings.
 tools: Read, Grep, Glob, Bash
 ---
 

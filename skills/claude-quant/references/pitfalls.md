@@ -35,6 +35,7 @@ Fast-reference list of traps that wreck backtests and live trading. Each entry: 
 | 23 | Vol-targeting / risk-scaling look-ahead | Backtest | Size today uses today's (or full-sample) vol |
 | 24 | Signal / alpha decay | Production | Live Sharpe << backtest, trending down |
 | 25 | Factor crowding | Production | Correlated to known factors; drawdowns co-move |
+| 26 | Intrabar stop/target fill (path-dependent) | Backtest | Stop *and* target both "hit" the same bar; filled at the trigger level, not the gap |
 
 ---
 

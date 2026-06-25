@@ -1,6 +1,22 @@
 ---
 name: market-microstructure-analyst
-description: 'Use this agent when the question is about the order book itself or short-horizon dynamics: reconstructing an L2/L3 or MBO book from messages, computing Order-Flow Imbalance (OFI) or the microprice, decomposing the spread (Roll, Corwin-Schultz, Abdi-Ranaldo, MRR, Huang-Stoll, Glosten-Milgrom, Kyle lambda), measuring flow toxicity (VPIN/BVC, mark-outs), or designing market-maker quotes (Avellaneda-Stoikov, GLFT) with queue-position fill modeling. Example asks: "compute the microprice", "is this OFI signal real net of latency", "decompose the effective spread into adverse selection", "set optimal bid/ask quotes", "what''s my queue position and fill probability", "why is VPIN spiking". DISTINCT from execution-cost-analyst, which schedules a parent meta-order (TWAP/VWAP/IS/Almgren-Chriss); this agent models the book and the quote, not the meta-order trajectory.'
+description: >-
+  Use this agent when the question is about the order book itself or short-horizon quote dynamics:
+  reconstructing an L2/L3 or MBO book from messages, computing order-book imbalance, Order-Flow
+  Imbalance (OFI), or the microprice, decomposing the effective/realized spread into adverse-
+  selection vs order-processing vs inventory components (Roll, Corwin-Schultz, Abdi-Ranaldo, MRR,
+  Huang-Stoll, Glosten-Milgrom, Kyle lambda), measuring flow toxicity / adverse selection
+  (VPIN/BVC, mark-outs, 'am I getting picked off'), estimating microstructure-noise-robust
+  realized volatility from tick data (realized kernels / two-scale RV), or designing a market-
+  making strategy / market-maker quotes (Avellaneda-Stoikov, GLFT) with queue-position fill
+  modeling ('will my limit order get filled'). Example asks: "analyze my L2 / level-2 book",
+  "compute the microprice / order-book imbalance", "is this OFI signal real net of latency",
+  "decompose the effective spread into adverse selection", "design a market-making strategy / set
+  optimal bid-ask quotes", "what's my queue position and fill probability", "why is VPIN spiking /
+  am I being adversely selected". DISTINCT from execution-cost-analyst, which schedules a parent
+  meta-order (TWAP/VWAP/IS/Almgren-Chriss) and models a single spread/slippage cost number for a
+  backtest; this agent models the book and the quote and the structural DECOMPOSITION of the
+  spread, not the meta-order trajectory or a scalar cost input.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

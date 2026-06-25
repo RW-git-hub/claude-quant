@@ -373,8 +373,15 @@ def kalman_hedge_ratio(
     """Time-varying hedge ratio (and intercept) via a random-walk Kalman filter.
 
     State theta_t = [intercept_t, beta_t] follows a random walk; observation is
-    y_t = [1, x_t] @ theta_t + noise. This is point-in-time: theta_t is updated
-    using data up to t only, so the filtered beta is safe to trade on.
+    y_t = [1, x_t] @ theta_t + noise. theta_t is the FILTERED posterior, updated
+    using data up to and INCLUDING t.
+
+    LOOK-AHEAD WARNING (Iron Law 1): beta_t is conditioned on the same-bar y_t, x_t,
+    so the contemporaneous residual y_t - beta_t*x_t is artificially small (near zero
+    by construction). To TRADE the spread you MUST lag the estimate — form
+    spread_t = y_t - beta.shift(1)*x_t - intercept.shift(1), i.e. decide bar t's
+    position from beta estimated through t-1. Using the unlagged beta is the classic
+    Kalman-pairs leak.
 
     Parameters
     ----------

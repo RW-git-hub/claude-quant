@@ -1,6 +1,13 @@
 ---
 name: transaction-cost-model
-description: 'Use when asked to "build a cost model", "add transaction costs", "model slippage / market impact", "charge costs on turnover", "compute break-even cost", "what''s my capacity / max AUM", or "is my strategy fragile to costs" — the quick, specific playbook (not the broad claude-quant skill) for a size-aware commission+spread+sqrt-impact+financing model, charged on turnover, with break-even and capacity.'
+description: >-
+  Use when asked to "build a cost model", "add transaction costs to my backtest", "model slippage
+  / market impact", "charge costs on turnover", "add borrow costs on shorts / funding costs on
+  perps to my backtest", "compute break-even cost", "what's my capacity / max AUM", or "is my
+  strategy fragile to costs" — the quick, specific playbook (not the broad claude-quant skill) for
+  a size-aware commission+spread+sqrt-impact+financing model, charged on turnover, with break-even
+  and capacity. For execution SCHEDULING (TWAP/VWAP/Almgren-Chriss, child-order plans) or deep
+  capacity-vs-AUM decay analysis, defer to the execution-cost-analyst agent.
 allowed-tools:
   - Read
   - Write

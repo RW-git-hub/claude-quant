@@ -1,6 +1,14 @@
 ---
 name: quant-code-reviewer
-description: 'Use this agent when reviewing quant Python for code-level correctness and production-readiness — the CODE being right, not the strategy being sound (that routes to backtest-auditor). Trigger on asks like "review my backtest/signal code," "is this function correct," "find numerical or look-ahead bugs," "why is my Sharpe NaN," "check NaN/alignment/off-by-one/dtype issues," "is this reproducible/deterministic," "vectorize this loop," "audit my test coverage," or "profile/speed up this hot path."'
+description: >-
+  Use this agent to review quant Python for code-level correctness and production-readiness — the
+  CODE being right, not the strategy being sound (methodology/cost-realism/overfit soundness
+  routes to backtest-auditor; data-pipeline PIT/survivorship issues route to data-integrity-
+  sentinel). Trigger on asks like "review my quant/backtest/signal/strategy code," "code review
+  this Python," "is this function/implementation correct," "find numerical or look-ahead bugs in
+  my code," "why is my Sharpe NaN," "check NaN/alignment/off-by-one/dtype/edge-case issues," "is
+  this reproducible/deterministic," "vectorize this loop," "audit my test coverage," or
+  "profile/speed up this hot path."
 tools: Read, Grep, Glob, Bash
 ---
 

@@ -1,6 +1,13 @@
 ---
 name: option-pricing-greeks
-description: 'Use when asked to "price an option/call/put", "compute Black-Scholes/BSM/Black-76", "get the greeks (delta/gamma/vega/theta/rho)", "solve/back out implied vol/IV", "check put-call parity", or "sanity-check the vol smile/surface" — the quick single-instrument pricing-and-risk playbook (not the broad claude-quant router).'
+description: >-
+  Use when asked to "price an option/call/put", "what's the fair value of this option / how much
+  is it worth", "compute Black-Scholes/BSM/Black-76", "get the greeks
+  (delta/gamma/vega/theta/rho)", "solve/back out implied vol/IV from a price", "check put-call
+  parity", or "sanity-check a single option quote against no-arb bounds and the smile" — the quick
+  single-instrument pricing-and-risk playbook (not the broad claude-quant router). For fitting a
+  whole vol surface (SVI/SABR/SSVI), exotic/path-dependent payoffs, book-level greeks, or
+  hedge-P&L simulation, hand off to the options-quant agent.
 allowed-tools:
   - Read
   - Write

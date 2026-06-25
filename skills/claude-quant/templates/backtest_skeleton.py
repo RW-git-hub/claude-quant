@@ -66,11 +66,17 @@ def fixed_sizer(gross: float = 1.0) -> Callable[[pd.Series, pd.Series], pd.Serie
 
 
 def vol_target_sizer(target_ann_vol: float = 0.10, lookback: int = 20,
-                     ppy: int = 252, max_leverage: float = 3.0
+                     ppy: int = 252, max_leverage: float = 3.0,
+                     vol_floor: float = 0.0
                      ) -> Callable[[pd.Series, pd.Series], pd.Series]:
     def size(signal: pd.Series, returns: pd.Series) -> pd.Series:
         # realized vol from PAST returns only (.shift(1)) -> no look-ahead
         realized = returns.rolling(lookback).std(ddof=1).shift(1) * np.sqrt(ppy)
+        # Floor the vol estimate: in a near-zero-vol window target/realized explodes.
+        # max_leverage caps the OUTPUT but not the instability; vol_floor bounds the
+        # ratio directly (cap = target_ann_vol/vol_floor). Default 0.0 = prior behavior.
+        if vol_floor > 0.0:
+            realized = realized.clip(lower=vol_floor)
         scaler = (target_ann_vol / realized).clip(upper=max_leverage).fillna(0.0)
         return signal.clip(-1, 1) * scaler
     return size
@@ -170,5 +176,12 @@ if __name__ == "__main__":
     assert sr_leaky > 10, "same-bar execution should look absurdly (impossibly) good"
     assert abs(sr_proper) < 1.0, "lagged execution on pure noise should have ~0 Sharpe"
     assert sr_leaky > sr_proper
+
+    # vol_floor bounds the sizer in a near-zero-vol window (else target/realized blows up)
+    calm = pd.Series([0.0] * 40 + list(rng.normal(0.0, 0.02, 60)))
+    one = pd.Series(1.0, index=calm.index)
+    s_floor = vol_target_sizer(target_ann_vol=0.10, lookback=20, vol_floor=0.05)(one, calm)
+    assert np.isfinite(s_floor.to_numpy()).all(), "vol_floor must keep the scaler finite"
+    assert s_floor.abs().max() <= 0.10 / 0.05 + 1e-9, "vol_floor should cap the scaler at target/floor"
 
     print("backtest_skeleton.py: all self-tests passed")

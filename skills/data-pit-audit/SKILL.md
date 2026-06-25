@@ -1,6 +1,15 @@
 ---
 name: data-pit-audit
-description: 'Use when asked to "audit the data", "vet the data pipeline/feed", "is this point-in-time", "survivorship check", "corporate-action / futures-roll / calendar sanity check", or BEFORE trusting any backtest — the fast pre-research data-integrity gate (the broad claude-quant skill is the full lifecycle; this is just the dataset trust gate).'
+description: >-
+  Use for the FAST inline data-integrity gate on a pipeline you are actively building, run BEFORE
+  any signal/backtest work: "audit the data", "vet the data pipeline/feed", "is this point-in-
+  time", "is my as-of / merge_asof join leaking", "look-ahead in my data", "survivorship /
+  delisting check", "corporate-action / futures-roll / calendar sanity check", "NaN/fill leakage",
+  "timezone/UTC alignment". This skill can run and mirror the data_loader template (Write/Edit).
+  For a deep, independent, read-only forensic pass over an unfamiliar or large codebase with
+  severity-ranked file:line findings, use the data-integrity-sentinel agent; for
+  methodology/strategy bugs use backtest-auditor; the broad claude-quant skill is the full
+  lifecycle.
 allowed-tools:
   - Read
   - Write

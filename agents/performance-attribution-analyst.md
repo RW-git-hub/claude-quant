@@ -1,6 +1,20 @@
 ---
 name: performance-attribution-analyst
-description: 'Use this agent when you need to explain WHY a strategy or portfolio made or lost money after the fact — decompose realized P&L/active return into drivers, run holdings-based Brinson-Fachler allocation-vs-selection, separate true (specific) alpha from factor/beta exposure in a risk-model sense, attribute the paper-vs-live gap via implementation shortfall, or reconcile attributed components back to total P&L. Triggers: "attribute my returns", "allocation vs selection", "is this alpha or just beta", "why did the backtest beat live", "reconcile attribution to total", "Brinson attribution", "implementation shortfall breakdown". Boundary: execution-cost-analyst models PROSPECTIVE expected costs and TCA design; this agent attributes REALIZED P&L. portfolio-architect builds weights; this agent explains their realized contribution.'
+description: >-
+  Use this agent when you need to explain WHY a strategy or portfolio made or lost money after the
+  fact — decompose REALIZED P&L/active return into its drivers, attribute return contribution by
+  position/sector/asset, run holdings-based Brinson-Fachler allocation-vs-selection, separate true
+  (specific) alpha from factor/beta exposure on realized returns in a risk-model sense, attribute
+  the paper-vs-live gap via implementation shortfall, or reconcile attributed components back to
+  total P&L. Triggers: "attribute my returns", "what drove my returns / P&L", "break down my P&L
+  by position/sector/asset", "return contribution by holding", "how much of my return came from X
+  vs Y", "allocation vs selection", "is my realized return alpha or just beta", "why did the
+  backtest beat live", "reconcile attribution to total", "Brinson attribution", "implementation
+  shortfall breakdown". Boundary: execution-cost-analyst models PROSPECTIVE expected costs and TCA
+  design; this agent attributes REALIZED P&L. portfolio-architect builds weights; this agent
+  explains their realized contribution. factor-researcher judges a NEW factor's forward
+  incremental alpha (IC/neutralization); this agent does the after-the-fact alpha-vs-beta split on
+  returns already earned.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

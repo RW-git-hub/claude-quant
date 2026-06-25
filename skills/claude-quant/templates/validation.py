@@ -512,7 +512,7 @@ def summarize_search(result: "WalkForwardResult | pd.DataFrame | np.ndarray",
     metrics = _load_sibling("metrics")
     if metrics is not None and hasattr(metrics, "deflated_sharpe_ratio"):
         dsr = float(metrics.deflated_sharpe_ratio(
-            best_ret, n_trials=max(int(round(n_eff)), 1),
+            best_ret, n_trials=max(n_eff, 1.0),   # float effective-N: rounding down inflates significance
             trial_sharpe_std=trial_sharpe_std, periods_per_year=periods_per_year))
     else:
         dsr = float(_dsr_fallback(best_ret, n_trials=max(n_eff, 1.0),

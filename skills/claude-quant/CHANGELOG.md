@@ -1,5 +1,43 @@
 # Changelog
 
+## 2.0.3 — 2026-06-25
+
+Routing/activation overhaul + correctness fixes, from a 48-agent audit-and-research workflow
+(20 routing auditors + 20 domain researchers, adversarially synthesized).
+
+### Changed — auto-routing (so a prompt reaches the right skill/agent)
+- **The broad SKILL.md is now a router that defers, not an interceptor.** Its description reframes
+  the contested triggers ("is this overfit", "vol targeting", "research a factor/signal", "pairs
+  trading", "walk-forward") as *route-to-specialist* instead of claiming them, adds a "defer to the
+  quick-draw skill / agent" layering line, and the Router gains a **"Hand off — the specialist for
+  the job"** table mapping each job → fast skill + deep agent (plus a front-of-funnel row to
+  `alpha-research-strategist`).
+- **31 collision-checked description rewrites** across every agent and quick-draw skill, resolving
+  real overlaps (e.g. the `backtest-auditor` ↔ `overfitting-detective` ↔ `quant-code-reviewer` ↔
+  `data-integrity-sentinel` cluster) and gaps (`curve-fit` / `data-mined` / `PBO` / `CSCV` now route
+  to `overfitting-detective`). Agent/skill NAMES are unchanged. `de-gross` was kept solely on
+  `risk-manager` (removed from `portfolio-architect`) per adversarial verification.
+
+### Fixed — correctness (Iron-Law bugs surfaced by the research pass)
+- `data_loader.pit_join` exposes `allow_exact_matches` (was hardcoded `True` → same-bar look-ahead);
+  default preserves behavior, `False` gives strict same-bar exclusion (+ self-test).
+- `pairs_trading.kalman_hedge_ratio` docstring + the `pairs-cointegration` skill now require lagging
+  the filtered beta (`.shift(1)`) before forming the tradable spread — the unlagged residual is
+  look-ahead.
+- `validation.summarize_search` passes the **float** effective-N to the Deflated Sharpe (was
+  `int(round(...))`, anti-conservative; could zero out deflation near n_eff≈1.5).
+- `backtest_skeleton.vol_target_sizer` gains a `vol_floor` bounding the target/realized ratio in a
+  near-zero-vol window (+ self-test); default off.
+
+### Fixed — documentation
+- Corrected a dimensionally-wrong vol-swap convexity formula (`volatility-strategist`); fixed stale
+  line refs + a false "no HAR-RV template" claim (`vol-forecast`); pointed recalibration at the
+  shipped numpy `calibration.py` instead of sklearn (`devig-kelly-betting`); noted `risk_contributions`
+  ships in `portfolio.py` (`risk-manager`); added a point-in-time ADV/liquidity note (`data.md`) and
+  an intrabar stop/target-fill entry to the pitfalls catalog.
+
+All 19 template self-tests pass.
+
 ## 2.0.2 — 2026-06-23
 
 Polish pass on the flagship example and credibility signals.

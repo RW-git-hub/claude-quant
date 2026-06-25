@@ -1,6 +1,17 @@
 ---
 name: regime-detector
-description: 'Use this agent when forecasting volatility or detecting/conditioning on market regimes for sizing and strategy switching — e.g. "fit a GARCH/EGARCH/GJR vol model", "forecast realized vol with HAR-RV", "build a 2-state HMM regime filter", "Markov-switching crisis detector", "online change-point detection (CUSUM/BOCPD)", "Kalman dynamic hedge ratio / time-varying beta", "is my regime label leaking the future?", or "vol-target sizing inputs". Owns causal one-sided estimation of vol/regime/state; hands VaR, limits and de-grossing rules to risk-manager, and cointegration-pair selection to stat-arb-strategist.'
+description: >-
+  Use this agent for the DEEP causal estimation of volatility and market regimes for sizing and
+  strategy switching — model selection and evaluation, not a one-shot forecast. Triggers:
+  "fit/compare a GARCH/EGARCH/GJR vol model", "forecast realized vol with HAR-RV", "build a
+  2-state HMM regime filter", "Markov-switching crisis detector", "what regime are we in / are we
+  in a risk-off / high-vol / crisis regime", "regime-switching model", "detect a structural break
+  / change-point (CUSUM/BOCPD)", "Kalman dynamic beta / time-varying parameters", "is my regime
+  label leaking the future?", or "evaluate vol forecasts with QLIKE / Diebold-Mariano / MCS". Owns
+  causal one-sided estimation of vol/regime/state and supplies the generic Kalman/dynamic-beta
+  machinery and lagged vol/regime forecasts downstream. Hand off: a quick one-shot vol-target
+  scaler -> vol-forecast skill; VaR/limits/de-grossing -> risk-manager; cointegration-pair
+  selection AND the trading hedge ratio of a pair/spread -> stat-arb-strategist.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

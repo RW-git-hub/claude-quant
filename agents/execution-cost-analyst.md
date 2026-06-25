@@ -1,6 +1,19 @@
 ---
 name: execution-cost-analyst
-description: 'Use this agent when costs, frictions, capacity, or execution scheduling decide whether an edge survives — e.g. "model transaction costs / slippage for this backtest", "what''s the break-even cost after fees?", "estimate strategy capacity / how alpha decays with AUM", "calibrate a square-root market-impact model", "design a TWAP/VWAP/POV or Almgren-Chriss schedule", "compute implementation shortfall", "is this still profitable after borrow/funding?", or "cost-stress my returns".'
+description: >-
+  Use this agent when costs, frictions, capacity, or execution scheduling decide whether an edge
+  survives. Cost side: "model transaction costs / slippage for this backtest", "what's the break-
+  even cost after fees?", "calibrate a square-root market-impact model", "is this still profitable
+  after borrow/funding?", "cost-stress my returns". Capacity side (owns the deep analysis):
+  "estimate strategy capacity / max AUM", "how does net return decay as AUM grows", "which
+  illiquid names cap my size". Execution-scheduling side (owns it in plain language too): "how
+  should I work / split / execute this large order to minimize impact", "design an optimal
+  execution schedule / child-order plan", "TWAP/VWAP/POV or Almgren-Chriss trajectory", "estimate
+  expected implementation shortfall for a planned execution". Boundaries: for a fast one-shot cost
+  stamp on a backtest use the transaction-cost-model skill; this agent owns capacity-decay and
+  scheduling. For attributing REALIZED implementation shortfall on actual fills, see performance-
+  attribution-analyst. For the order book / quote / queue itself (OFI, microprice, spread
+  decomposition, market-maker quoting), see market-microstructure-analyst.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

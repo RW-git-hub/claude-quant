@@ -1,6 +1,22 @@
 ---
 name: rates-fx-quant
-description: 'Use this agent when working on fixed-income, interest-rate, or FX quant tasks: bootstrapping multi-curve yield curves (OIS/SOFR/ESTR discount + projection), computing DV01/PV01, modified/effective duration, convexity, and key-rate/partial-DV01 risk; bond or swap carry and roll-down; FX carry, covered interest parity, and cross-currency basis; or rates/FX vol (normal/shifted SABR swaptions, Vanna-Volga FX smiles). Example asks: "bootstrap a SOFR curve", "compute key-rate DV01", "is this FX carry crowded", "price this swaption in normal vol", "check my day-count conventions". For equity/index vol surfaces and generic Greeks use options-quant; for the carry-tail VaR/crowding sizing decision loop, hand off to risk-manager.'
+description: >-
+  Use this agent for fixed-income, interest-rate, and FX quant work: multi-curve bootstrapping
+  (OIS/SOFR/ESTR/SONIA discount + projection curves); pricing interest-rate swaps and bonds (PV,
+  par swap rate, YTM, annuity/par-swap identity); DV01/PV01, modified/effective duration,
+  convexity, and key-rate/partial-DV01 risk; bond or swap carry and roll-down; FX carry, covered
+  interest parity, cross-currency basis; and rates/FX volatility (normal/shifted SABR swaptions,
+  and FX smiles via Vanna-Volga including 25-delta risk reversals/butterflies with explicit
+  spot/forward/premium-adjusted delta-convention selection); plus day-count, calendar, and
+  business-day-roll exactness. Example asks: "bootstrap a SOFR curve", "price this interest-rate
+  swap on the SOFR curve", "value this bond / compute YTM", "what's the par swap rate", "compute
+  key-rate DV01", "is this JPY FX carry crowded", "price this payer swaption in normal vol with
+  shifted SABR", "build the EURUSD vanna-volga smile / 25-delta risk reversal", "check my day-
+  count conventions". Boundary: for equity/index vol surfaces and generic single-name option
+  Greeks use options-quant (it prices single FX options but defers FX-native smile construction
+  and delta-convention choice here); rates-fx-quant DIAGNOSES carry crowding/roll/curve-spread
+  risk while risk-manager owns firm-wide VaR/limits/kill-switches and volatility-strategist owns
+  variance-as-an-asset and VIX-style tail sizing.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

@@ -5,13 +5,22 @@ description: >-
   lifecycle: data ingestion, signal/factor research, backtesting, production
   code, and statistics/risk. Enforces quant rigor — no look-ahead, no
   survivorship bias, no overfitting; realistic costs; correct statistics.
-  Use when asked to "backtest a strategy", "research a factor/signal", "is this
-  overfit", "compute Sharpe / drawdown / risk metrics", "build a market-data
-  pipeline", "point-in-time / avoid look-ahead", "portfolio construction",
-  "walk-forward / cross-validate a strategy", "vol targeting", "pairs trading /
-  cointegration", "options pricing / greeks", "VaR / stress test", "prediction
-  market / Polymarket / sports betting", or any equities / futures / crypto / FX /
-  options quant task.
+  This is the full-lifecycle ROUTER and catch-all: for a fast single job prefer the
+  matching quick-draw skill, and for a deep independent review prefer the matching
+  agent — defer to them rather than handling the whole job here. Use directly for
+  multi-step or cross-cutting work ("take this idea to a deployable strategy", "build
+  a market-data / point-in-time pipeline", "review my whole research process"), and
+  as the fallback for any equities / futures / crypto / FX / rates / options quant
+  task not owned by a narrower skill or agent. For a single focused job, route to:
+  overfitting-detective ("is this overfit / deflated Sharpe"), the vol specialists
+  ("vol targeting"), factor-screen or factor-researcher ("research a factor/signal"),
+  pairs-cointegration or stat-arb-strategist ("pairs trading / cointegration"),
+  walk-forward-validation ("walk-forward / cross-validate"), performance-metrics
+  ("Sharpe / drawdown / risk metrics"), risk-report or risk-manager ("VaR / stress
+  test"), option-pricing-greeks or options-quant ("options pricing / greeks"),
+  devig-kelly-betting ("prediction market / Polymarket / sports betting"),
+  leakproof-backtest ("backtest this signal"), or alpha-research-strategist (a raw
+  idea with no results yet).
 allowed-tools:
   - Read
   - Write
@@ -22,7 +31,7 @@ allowed-tools:
   - WebSearch
   - WebFetch
   - AskUserQuestion
-version: 2.0.2
+version: 2.0.3
 ---
 
 # Claude Quant
@@ -72,6 +81,11 @@ step-by-step recipes (idea→research plan, audit-a-backtest-for-leakage, factor
 study, validate-before-capital, size & risk-manage, evaluate a bet, go live) that
 name the exact files and functions to use.
 
+**Layering — defer, don't absorb.** This broad skill is the full-lifecycle router
+and catch-all. For a *fast single job* prefer the matching **quick-draw skill**; for
+a *deep independent review* prefer the matching **agent**. Hand off to them rather
+than doing the whole job here — the specialist map is below the reference table.
+
 | The task is about… | Read |
 |---|---|
 | Data: loading, point-in-time, survivorship, futures rolls, calendars, features | `references/data.md` |
@@ -95,6 +109,37 @@ name the exact files and functions to use.
 
 Read the **one or two** files relevant to the current step — don't load everything.
 `references/pitfalls.md` is the quick scan you run before trusting any result.
+
+## Hand off — the specialist for the job
+
+Map the task to its **fast quick-draw skill** (one focused deliverable) or **deep
+agent** (independent, thorough review), and prefer those over doing it in this skill.
+
+| Job | Fast skill | Deep agent |
+|---|---|---|
+| Raw idea, no results yet — worth testing? trial budget? | — | `alpha-research-strategist` (pre-registration, OOS plan) **before any backtest** |
+| Stand up a leak-free vectorized backtest | `leakproof-backtest` | `backtest-auditor` (audit an existing one) |
+| Is this overfit? deflated/probabilistic Sharpe, PBO, permutation | — | `overfitting-detective` |
+| Purged/embargoed CV, CPCV, walk-forward | `walk-forward-validation` | — |
+| Cross-sectional factor: IC, quantiles, decay | `factor-screen` | `factor-researcher` (deflated, neutralized verdict) |
+| Portfolio weights / capital allocation | `position-sizing` | `portfolio-architect` |
+| VaR/ES, stress, limits, VaR backtests | `risk-report`, `monte-carlo-risk` | `risk-manager` |
+| Costs, slippage, market impact, capacity | `transaction-cost-model` | `execution-cost-analyst` |
+| Point-in-time / survivorship / data-feed audit | `data-pit-audit` | `data-integrity-sentinel` |
+| Options pricing, greeks, implied vol | `option-pricing-greeks` | `options-quant` |
+| Cointegration / pairs / spread | `pairs-cointegration` | `stat-arb-strategist` |
+| Vol forecasting (EWMA/GARCH/HAR) | `vol-forecast` | `regime-detector` (deep estimation), `volatility-strategist` (vol-as-asset) |
+| Performance metrics (Sharpe/DD/turnover) | `performance-metrics` | `performance-attribution-analyst` (attribution) |
+| Devig, Kelly, CLV (prediction/sports) | `devig-kelly-betting` | `prediction-market-analyst` |
+| ML labeling, meta-labeling, sample weights | — | `ml-alpha-engineer` |
+| Crypto/DeFi funding, basis, AMM, impermanent loss | — | `crypto-defi-quant` |
+| Order book, OFI, optimal execution | — | `market-microstructure-analyst` |
+| Yield curves, DV01, carry, FX | — | `rates-fx-quant` |
+| Going live: OMS, reconciliation, kill switch | — | `live-trading-engineer` |
+| Numerical correctness / hidden leakage in code | — | `quant-code-reviewer` |
+
+Pick the **fast skill** for one deliverable; the **agent** for an independent,
+thorough pass. Either way, defer to them rather than absorbing the job here.
 
 ---
 

@@ -309,6 +309,17 @@ roll_std = g.transform(lambda s: s.rolling(252).std(ddof=1))
 df["ts_z"] = (df["factor"] - roll_mean) / roll_std
 ```
 
+### Liquidity filters are point-in-time too
+A tradability/liquidity screen is a feature, so it must be PIT like any other. Compute ADV / median dollar-volume on a **trailing** window evaluated as of each rebalance (shift it one bar so the current bar's volume can't leak) and filter the universe with *that* — never a full-sample or current ADV, which silently injects hindsight liquidity (and survivorship via "names that ended up liquid"). Feed the **same trailing ADV** into the market-impact / capacity denominator (`references/transaction-costs.md`) so the cost model and the universe agree.
+
+```python
+# trailing ADV known at t (shifted so today's volume is excluded), per name
+adv = (df.sort_values(["symbol", "date"])
+         .groupby("symbol")["dollar_volume"]
+         .transform(lambda s: s.rolling(21).mean().shift(1)))
+tradable = adv >= adv_floor          # apply as the as-of-t universe filter
+```
+
 ### Winsorization (outlier control, not removal)
 Clip extremes (e.g. to 1st/99th pct or ±k MADs) before normalizing so a few prints don't dominate z-scores. Cross-sectionally, winsorize within each date (thresholds from the same-day cross section, so no leakage). Time-series winsorization must use trailing quantiles only.
 

@@ -1,7 +1,7 @@
 {
   "name": "claude-quant",
   "description": "A disciplined quantitative collaborator for the full research-to-production lifecycle: data ingestion, signal/factor research, backtesting, production code, and statistics/risk. Enforces quant rigor — no look-ahead, no survivorship bias, no overfitting; realistic costs; correct statistics.",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "author": {
     "name": "Ross W"
   },

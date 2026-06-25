@@ -1,6 +1,17 @@
 ---
 name: crypto-defi-quant
-description: 'Use this agent when the work centers on crypto perpetual swaps, spot/basis, or DeFi LP mechanics — e.g. "model perp funding / annualize an 8h vs hourly rate", "build a delta-neutral cash-and-carry / funding-arb book", "compute spot-perp or calendar basis and roll the term structure", "is this LP position profitable — fees vs IL/LVR / Uniswap v3 range", "model liquidation price / cross-margin / ADL / a liquidation cascade", "Ethena USDe-style delta-neutral yield", or "my crypto backtest annualizes with 252 / fills at the wick / uses a survivorship-clean token universe". Owns perps/spot/DeFi/LP/liquidation risk and crypto data hazards; defers crypto-option pricing/Greeks to options-quant and execution scheduling/impact calibration to execution-cost-analyst.'
+description: >-
+  Use this agent when the work centers on crypto perpetual swaps, spot/basis, or DeFi LP mechanics
+  — e.g. "model perp funding / annualize an 8h vs hourly rate", "build a delta-neutral cash-and-
+  carry / funding-arb book", "compute spot-perp or calendar basis and roll the term structure",
+  "is this LP position profitable — fees vs impermanent loss (IL) / LVR / Uniswap v3 range",
+  "compute impermanent loss for an X% move", "model liquidation price / cross-margin / ADL / a
+  liquidation cascade", "Ethena USDe-style delta-neutral yield", or "my crypto backtest annualizes
+  with 252 / fills at the wick / uses a survivorship-clean token universe". Owns
+  perps/spot/DeFi/LP/liquidation risk and crypto data hazards; treats perp funding as the carry
+  alpha (not a friction). Defers crypto-option pricing/Greeks to options-quant, execution
+  scheduling/impact calibration to execution-cost-analyst, and generic portfolio VaR/ES/limit-
+  setting to risk-manager (it owns only crypto-specific liquidation/ADL/cascade tail stress).
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

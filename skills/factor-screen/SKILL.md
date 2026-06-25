@@ -1,6 +1,13 @@
 ---
 name: factor-screen
-description: 'Use when asked to "evaluate a factor", "screen a signal", "is this cross-sectional signal any good", "compute IC / rank-IC", "IC decay / half-life", "quantile / decile long-short spread", "factor monotonicity", or "factor t-stat" — the fast single-factor cross-sectional screen (the quick counterpart to the broad claude-quant skill).'
+description: >-
+  Use when asked to "evaluate a factor", "screen a signal", "is this cross-sectional signal any
+  good", "compute IC / rank-IC", "IC decay / half-life", "quantile / decile long-short spread",
+  "factor monotonicity", or "factor t-stat" — the FAST, single-factor, gross cross-sectional
+  screen (the quick counterpart to the broad claude-quant skill). Scope is ONE factor with IC,
+  decay, and a gross quantile spread; for the full deflated, costed, neutralized verdict (Fama-
+  MacBeth, incremental alpha vs other factors, capacity/crowding, n_trials deflation,
+  TRADABLE/NOT-TRADABLE call) use the factor-researcher agent.
 allowed-tools:
   - Read
   - Write

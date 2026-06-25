@@ -1,6 +1,15 @@
 ---
 name: performance-metrics
-description: 'Use when asked to "compute/report performance metrics", "Sharpe ratio", "annualized return/vol", "Sortino", "Calmar", "max drawdown", "hit rate", "profit factor", "information ratio", "Probabilistic/Deflated Sharpe", or "is this Sharpe real after N trials / is it just luck" — the quick metrics-only playbook (the broad claude-quant skill covers the full lifecycle).'
+description: >-
+  Use when asked to "compute/report performance metrics", "Sharpe ratio", "annualized return/vol",
+  "Sortino", "Calmar", "max drawdown", "hit rate", "profit factor", "information ratio", or to add
+  a "Probabilistic/Deflated Sharpe" line to a metrics block after a parameter search — the quick
+  metrics-only playbook that turns a return series into a correct, honest metrics table. Boundary:
+  for the ADVERSARIAL verdict on whether an edge is overfit (permutation tests, stationary
+  bootstrap on the equity curve, parameter-plateau-vs-spike, multiple-testing investigation,
+  honest Sharpe CIs) use the overfitting-detective agent; this skill just reports the numbers
+  (including DSR) and does not run the investigation. The broad claude-quant skill covers the full
+  lifecycle.
 allowed-tools:
   - Read
   - Write

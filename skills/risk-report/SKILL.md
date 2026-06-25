@@ -1,6 +1,14 @@
 ---
 name: risk-report
-description: 'Use when asked to "produce a risk report", "compute VaR / Expected Shortfall (ES)", "VaR backtest", "Kupiec / Christoffersen", "is my VaR calibrated", "component / marginal risk contributions", "risk attribution / budget", "stress test the book", "scenario / reverse stress", or "check risk limits" — the quick path to one defensible portfolio risk report (parametric + historical + MC VaR/ES, risk attribution, stress, limits, coverage backtest), versus the broad claude-quant router.'
+description: >-
+  Use when asked to "produce a risk report", "compute VaR / Expected Shortfall (ES)", "VaR
+  backtest", "Kupiec / Christoffersen", "is my VaR calibrated", "component / marginal risk
+  contributions", "risk attribution / budget", "stress test the book", "scenario / reverse
+  stress", or "check risk limits" — the quick path to ONE defensible portfolio risk report right
+  now (parametric + historical + Monte-Carlo VaR/ES, risk attribution, scenario stress, limit
+  table, coverage backtest). For ongoing limit governance, breach handling, kill-switches and de-
+  risking decisions use the risk-manager agent; for the full lifecycle use the broad claude-quant
+  router.
 allowed-tools:
   - Read
   - Write

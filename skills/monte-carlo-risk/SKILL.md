@@ -1,6 +1,14 @@
 ---
 name: monte-carlo-risk
-description: 'Use when asked to "Monte-Carlo a strategy", "simulate equity paths", "bootstrap the returns", "distribution of drawdown / terminal wealth", "risk of ruin", "how bad could the drawdown get", or "stress-test sizing with simulation" — the quick resampling-stress playbook (the broad claude-quant skill is the full robustness lab).'
+description: >-
+  Use when asked to "Monte-Carlo a strategy", "simulate equity paths", "bootstrap my returns /
+  equity curve", "distribution of drawdown / terminal wealth", "risk of ruin", "how bad could the
+  drawdown get", or "stress-test my sizing with simulation" — the quick resampling playbook that
+  turns ONE realized backtest path into a distribution (stationary bootstrap -> drawdown/terminal-
+  wealth/ruin percentiles) to quantify SAMPLING uncertainty for a sizing rule. Not a multiple-
+  testing / 'is the Sharpe real' verdict (that's the overfitting-detective agent), not portfolio
+  Monte-Carlo VaR (that's the risk-report skill), and not the sizing-rule chooser (that's
+  position-sizing). The broad claude-quant skill is the full robustness lab.
 allowed-tools:
   - Read
   - Write
