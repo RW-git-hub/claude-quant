@@ -31,7 +31,7 @@ allowed-tools:
   - WebSearch
   - WebFetch
   - AskUserQuestion
-version: 2.0.3
+version: 2.1.0
 ---
 
 # Claude Quant
@@ -106,6 +106,7 @@ than doing the whole job here — the specialist map is below the reference tabl
 | Risk management & stress testing: VaR/ES, backtests, limits | `references/risk-management.md` |
 | Prediction markets (Polymarket) & sports betting quant | `references/prediction-sports-markets.md` |
 | Taking a strategy live: OMS, reconciliation, kill switches | `references/live-trading.md` |
+| Performance attribution: Brinson, Carino linking, factor & shortfall | `references/attribution.md` |
 
 Read the **one or two** files relevant to the current step — don't load everything.
 `references/pitfalls.md` is the quick scan you run before trusting any result.
@@ -193,11 +194,13 @@ A full worked pipeline tying them together: `examples/end_to_end.py`.
 - `templates/pairs_trading.py` — Engle-Granger cointegration, hedge ratio, half-life, signals.
 - `templates/portfolio.py` — min-variance, max-Sharpe, risk parity (ERC), HRP, Black-Litterman.
 - `templates/regime.py` — EWMA/GARCH vol, HMM, Kalman, CUSUM, vol targeting.
-- `templates/labeling.py` — triple-barrier labels, sample uniqueness (financial ML).
+- `templates/labeling.py` — triple-barrier labels, sample uniqueness + sequential-bootstrap weights (financial ML).
+- `templates/attribution.py` — Brinson-Fachler, Carino multi-period linking, factor attribution, Perold implementation shortfall.
 
 **Costs, execution & risk**
 - `templates/costs.py` — commission/spread/square-root impact/borrow/funding/breakeven.
 - `templates/execution.py` — TWAP/VWAP/POV schedules, Almgren-Chriss trajectory, implementation shortfall.
+- `templates/microstructure.py` — order-flow imbalance, microprice, Roll spread, VPIN, Avellaneda-Stoikov quoting.
 - `templates/pretrade_checks.py` — pre-trade risk gate (order/position/gross/collar/participation/kill-switch).
 - `templates/risk.py` — Cornish-Fisher & Monte-Carlo VaR, ES, Kupiec & Christoffersen backtests, stress.
 - `templates/robustness.py` — permutation tests, stationary bootstrap, White's Reality Check, parameter plateaus.

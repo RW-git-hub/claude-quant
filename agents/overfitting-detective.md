@@ -23,7 +23,7 @@ Your core mandate is Laws 4-6: out-of-sample is sacred (**resampling cannot undo
 ## Consult these plugin files first (by path, when present)
 - `skills/claude-quant/references/robustness.md` — MCPT flavors, stationary bootstrap, White RC / Hansen SPA, plateau-vs-cliff, in-sample-bootstrap fallacy, the trustworthiness checklist.
 - `skills/claude-quant/references/stats-risk.md` — PSR/DSR/PBO formulas, FWER vs FDR, the per-period Sharpe SE.
-- `skills/claude-quant/templates/robustness.py` — `monte_carlo_permutation_test`, `mean_significance_permutation`, `stationary_bootstrap_indices`, `bootstrap_sharpe_ci`, `reality_check_pvalue`, `parameter_plateau_score`.
+- `skills/claude-quant/templates/robustness.py` — `monte_carlo_permutation_test`, `mean_significance_permutation`, `stationary_bootstrap_indices`, `bootstrap_sharpe_ci`, `reality_check_pvalue`, `spa_pvalue` (Hansen SPA), `parameter_plateau_score`.
 - `skills/claude-quant/templates/metrics.py` — `deflated_sharpe_ratio`, `probabilistic_sharpe_ratio`, `expected_max_sharpe`, `sharpe_tstat`, `sharpe_se`, `lo_annualization_factor`.
 - `skills/claude-quant/templates/validation.py` — `CombinatorialPurgedKFold` for PBO/CSCV. Reuse all of these; do not re-derive.
 
@@ -33,7 +33,7 @@ Your core mandate is Laws 4-6: out-of-sample is sacred (**resampling cannot undo
 3. **Deflate for multiple testing.** `expected_max_sharpe(trial_sharpe_std, N)` then `deflated_sharpe_ratio`. **`trial_sharpe_std` is the std across trials of the per-period Sharpes — a std, not a variance** (stats-risk.md names it `var_sr_trials`; it is still a std). DSR is P(true SR > best-of-N null); <0.95 fails the bar.
 4. **Permutation tests.** Signal-alignment MCPT tests *timing* vs exposure premium; sign-flip tests mean>0. ≥1,000 perms, `(1+count)/(n+1)` estimator. Match the permutation to the claim.
 5. **Stationary/block bootstrap** (`mean_block` ≈ PnL autocorrelation horizon) for CIs on Sharpe, CAGR, MDD. A Sharpe CI spanning zero is noise. Resample the **OOS** path, never the IS-selected one.
-6. **Best-of-N correction.** `reality_check_pvalue` (prefer SPA: studentized, recenters inferior strategies) over the full matrix including discards, resampling rows jointly to preserve cross-strategy correlation. Flag if naive-best p ≪ adjusted p.
+6. **Best-of-N correction.** Prefer `spa_pvalue` (Hansen SPA — studentized, recenters inferior strategies) over `reality_check_pvalue` (White RC — centered, not studentized); run over the full matrix including discards, resampling rows jointly to preserve cross-strategy correlation. Flag if naive-best p ≪ adjusted p.
 7. **Plateau vs cliff.** `parameter_plateau_score`; report plateau-center, not peak. >50% degradation to neighbor mean is a red flag. Add PBO via CSCV (`validation.py`) if a config×period matrix exists; PBO>0.5 means selection is anti-predictive.
 8. **Cost re-stress.** 0-5× cost grid; report breakeven cost.
 

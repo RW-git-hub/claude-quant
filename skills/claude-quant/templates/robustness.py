@@ -360,6 +360,131 @@ def reality_check_pvalue(
 
 
 # --------------------------------------------------------------------------- #
+# Hansen's Superior Predictive Ability (SPA) test
+# --------------------------------------------------------------------------- #
+def spa_pvalue(
+    returns_matrix,
+    n_boot: int = 1000,
+    mean_block: float = 10,
+    seed: int = 0,
+    variant: str = "studentized",
+) -> float:
+    """Hansen's (2005) Superior Predictive Ability (SPA) p-value.
+
+    Like White's Reality Check, SPA tests whether the BEST of N candidate
+    strategies beats the benchmark (0) after correcting for data snooping:
+
+        H0: max_k E[ f_k ] <= 0
+
+    SPA improves on the Reality Check in two ways, both of which make it more
+    powerful (lower p, i.e. more likely to detect a real edge) when the candidate
+    set is padded with many obviously-dead strategies:
+
+    1. STUDENTIZATION. Each column's mean is scaled by its own standard error
+       (estimated by the stationary bootstrap), so the test statistic is
+           T_SPA = max_k  sqrt(T) * mean(f_k) / se_k
+       This puts strategies on a common scale and stops a single high-variance
+       column from dominating the null distribution.
+    2. RECENTERING ONLY INFERIOR STRATEGIES. The Reality Check recenters every
+       column by its full-sample mean (the least-favorable configuration), which
+       lets hopeless strategies (very negative mean) inflate the null and bury a
+       true edge. SPA instead recenters a strategy by its mean ONLY when that
+       mean is not "too negative" to plausibly be the best:
+           g_k = mean(f_k) * 1{ mean(f_k) >= -A_k }
+       with the Hansen threshold A_k = (1/4) * n^{-1/4} * se_k * sqrt(T)
+       (so in studentized units the cutoff is -(1/4) * n^{-1/4}). Strategies
+       below the threshold are recentered to 0 (treated as exactly at the
+       benchmark) and therefore cannot pump up the bootstrap maximum. This is
+       Hansen's consistent ("c") p-value.
+
+    The bootstrap null statistic for replicate b is
+        T*_b = max_k  sqrt(T) * (mean(f_k^{*b}) - g_k) / se_k
+    and the p-value is (1 + #{ T*_b >= T_SPA }) / (n_boot + 1).
+
+    Iron-Law note: this is an OFFLINE evaluation tool, not a backtest signal --
+    it consumes a finished (T x N) panel of per-period performance and uses the
+    FULL sample (including future rows) to compute SEs and recentering. It is
+    leak-free for its intended use (post-hoc multiple-testing correction) but
+    must NOT be embedded inside a walk-forward loop as if it were causal.
+
+    Feed the FULL set of strategies you tried, including discarded ones; columns
+    must be performance relative to the benchmark (excess or strategy-minus-
+    benchmark) so that 0 is the no-edge value.
+
+    Parameters
+    ----------
+    returns_matrix : (T, N) array-like of per-period relative performance.
+    n_boot : stationary-bootstrap replicates.
+    mean_block : expected block length for the stationary bootstrap.
+    variant : "studentized" (default, Hansen's studentized statistic) or
+              "raw" (skip studentization; recenter inferior strategies on the
+              raw mean scale -- a midpoint between White's RC and full SPA).
+
+    Returns
+    -------
+    p-value in (0, 1]; small => the best strategy's edge survives the SPA
+    multiple-testing correction. By construction SPA's p-value is <= White's
+    Reality Check p-value when many clearly-inferior strategies are present.
+
+    Reference
+    ---------
+    Hansen, P. R. (2005), "A Test for Superior Predictive Ability", Journal of
+    Business & Economic Statistics 23(4), 365-380.
+    """
+    if variant not in ("studentized", "raw"):
+        raise ValueError("variant must be 'studentized' or 'raw'")
+    M = np.asarray(
+        returns_matrix.values if isinstance(returns_matrix, pd.DataFrame)
+        else returns_matrix,
+        dtype=float,
+    )
+    if M.ndim != 2:
+        raise ValueError("returns_matrix must be 2-D (T x N)")
+    if not np.all(np.isfinite(M)):
+        raise ValueError("returns_matrix contains non-finite values")
+    T, N = M.shape
+    if T < 2 or N < 1:
+        raise ValueError("need T>=2 and N>=1")
+
+    col_means = M.mean(axis=0)                          # (N,)
+    sqrtT = np.sqrt(T)
+
+    idx = stationary_bootstrap_indices(T, mean_block, n_boot, seed=seed)  # (B,T)
+    boot = M[idx]                                       # (B, T, N)
+    boot_means = boot.mean(axis=1)                      # (B, N)
+
+    # Bootstrap SE of sqrt(T)*mean for each column = sqrt(T)*std of the bootstrap
+    # means (Politis-Romano stationary-bootstrap variance estimate). This is the
+    # studentizing denominator se_k (in sqrt(T)*mean units).
+    se = sqrtT * boot_means.std(axis=0, ddof=1)         # (N,)
+    se = np.where(se > 0, se, np.inf)                   # dead-flat column -> drop
+
+    if variant == "studentized":
+        scale = se                                     # divide stats by se_k
+    else:
+        scale = np.ones(N)                             # raw scale
+
+    # Observed studentized (or raw) statistic.
+    t_obs = sqrtT * col_means / scale                  # (N,)
+    T_obs = float(np.max(t_obs))
+
+    # Hansen recentering: keep mean only if it is not too negative to be best.
+    # In studentized units the threshold is -(1/4) * N_T^{-1/4} where N_T = T;
+    # equivalently g_k = col_means * 1{ sqrtT*mean/se >= -(1/4) T^{-1/4} }.
+    thresh = -0.25 * (T ** -0.25)                       # studentized cutoff
+    studentized_means = sqrtT * col_means / se         # always studentize the gate
+    keep = studentized_means >= thresh                 # True => recenter on mean
+    g = np.where(keep, col_means, 0.0)                 # (N,) recentering vector
+
+    # Bootstrap null: max over k of studentized (mean* - g_k).
+    centered = sqrtT * (boot_means - g[None, :]) / scale[None, :]   # (B, N)
+    T_star = np.max(centered, axis=1)                  # (B,)
+
+    count = int(np.sum(T_star >= T_obs))
+    return float((1 + count) / (n_boot + 1))
+
+
+# --------------------------------------------------------------------------- #
 # parameter-stability / plateau diagnostic
 # --------------------------------------------------------------------------- #
 def parameter_plateau_score(metric_grid, frac: float = 0.9) -> dict:
@@ -481,7 +606,42 @@ if __name__ == "__main__":
     p_rc_edge = reality_check_pvalue(edge, n_boot=500, mean_block=10, seed=9)
     assert p_rc_edge < 0.05, f"a real strong edge should survive RC, got {p_rc_edge}"
 
-    # (f) plateau score: broad peak > single spike
+    # (f) Hansen SPA test
+    # 20 no-edge strategies -> SPA should NOT be significant.
+    spa_rng = np.random.default_rng(11)
+    spa_no_edge = spa_rng.normal(0.0, 0.01, size=(500, 20))
+    p_spa_null = spa_pvalue(spa_no_edge, n_boot=500, mean_block=10, seed=12)
+    assert p_spa_null > 0.05, (
+        f"best of 20 no-edge strategies should NOT be SPA-significant, got {p_spa_null}"
+    )
+    # inject one genuine edge -> SPA should detect it.
+    spa_edge = spa_rng.normal(0.0, 0.01, size=(500, 20))
+    spa_edge[:, 7] += 0.0025
+    p_spa_edge = spa_pvalue(spa_edge, n_boot=500, mean_block=10, seed=13)
+    assert p_spa_edge < 0.05, f"a real edge should survive SPA, got {p_spa_edge}"
+
+    # SPA <= White's RC when the candidate set is padded with many dead
+    # strategies: one modest real edge + 60 strongly-negative dead strategies.
+    # RC recenters every dead column on its (very negative) mean, inflating the
+    # null max; SPA recenters dead strategies to 0 instead -> a smaller null and
+    # a smaller (or equal) p-value.
+    pad_rng = np.random.default_rng(14)
+    Tt, Nedge, Ndead = 500, 1, 60
+    real = pad_rng.normal(0.0, 0.01, size=(Tt, Nedge)) + 0.0014   # modest edge
+    dead = pad_rng.normal(-0.004, 0.012, size=(Tt, Ndead))        # clearly dead
+    padded = np.hstack([real, dead])
+    p_rc_pad = reality_check_pvalue(padded, n_boot=800, mean_block=10, seed=15)
+    p_spa_pad = spa_pvalue(padded, n_boot=800, mean_block=10, seed=15)
+    assert p_spa_pad <= p_rc_pad + 1e-12, (
+        f"SPA p ({p_spa_pad}) should be <= RC p ({p_rc_pad}) with many dead strategies"
+    )
+
+    # p-values are valid probabilities; "raw" variant runs and is bounded.
+    assert 0.0 < p_spa_null <= 1.0 and 0.0 < p_spa_edge <= 1.0
+    p_spa_raw = spa_pvalue(spa_edge, n_boot=300, mean_block=10, seed=16, variant="raw")
+    assert 0.0 < p_spa_raw <= 1.0
+
+    # (g) plateau score: broad peak > single spike
     xx, yy = np.meshgrid(np.linspace(-3, 3, 21), np.linspace(-3, 3, 21))
     broad = np.exp(-(xx**2 + yy**2) / 8.0)          # wide gaussian -> plateau
     spike = np.zeros((21, 21))

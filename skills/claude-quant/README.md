@@ -16,7 +16,7 @@ realistic costs, correct statistics. Every code template is **execution-verified
 claude-quant/
 ├── SKILL.md                      # Entry point: Iron Laws, router, canonical conventions
 ├── CHANGELOG.md
-├── references/                   # Read on-demand (19 files)
+├── references/                   # Read on-demand (20 files)
 │   ├── playbooks.md              # "What do I actually do" — step-by-step recipes
 │   ├── data.md                   # Ingestion, point-in-time, survivorship, rolls, calendars
 │   ├── research-backtest.md      # Research loop, backtest mechanics, costs, sizing
@@ -35,12 +35,13 @@ claude-quant/
 │   ├── crypto-defi.md            # Funding/basis, AMMs, impermanent loss, liquidations
 │   ├── risk-management.md        # VaR/ES, VaR backtests, stress, limits
 │   ├── prediction-sports-markets.md  # Polymarket + sports: devig, Kelly, CLV, calibration
-│   └── live-trading.md           # OMS, reconciliation, kill switches, go-live checklist
+│   ├── live-trading.md           # OMS, reconciliation, kill switches, go-live checklist
+│   └── attribution.md            # Brinson, Carino linking, factor & implementation-shortfall attribution
 ├── templates/                    # Correct, self-testing starting points (numpy/pandas)
 │   ├── run_all_tests.py          # Runs every template's self-tests (CI gate)
 │   ├── metrics.py · validation.py · backtest_skeleton.py · data_loader.py
-│   ├── factor_research.py · pairs_trading.py · portfolio.py · regime.py · labeling.py
-│   ├── costs.py · execution.py · pretrade_checks.py · risk.py · robustness.py · overfitting.py
+│   ├── factor_research.py · pairs_trading.py · portfolio.py · regime.py · labeling.py · attribution.py
+│   ├── costs.py · execution.py · pretrade_checks.py · risk.py · robustness.py · overfitting.py · microstructure.py
 │   └── options.py · crypto_defi.py · betting_markets.py · calibration.py
 └── examples/
     └── end_to_end.py             # Full worked pipeline: data→factor→portfolio→costs→metrics→CV
@@ -65,7 +66,7 @@ environment with numpy + pandas — `pip install -r requirements.txt`.
 ## Verify
 
 ```
-python templates/run_all_tests.py    # every template's self-tests (19/19 pass)
+python templates/run_all_tests.py    # every template's self-tests (21/21 pass)
 python examples/end_to_end.py         # full worked pipeline, self-checked
 ```
 
@@ -73,7 +74,7 @@ python examples/end_to_end.py         # full worked pipeline, self-checked
 
 All major asset classes (equities, futures/commodities, crypto, FX/rates/options)
 plus prediction & sports markets; daily/swing and intraday primary (HFT noted);
-modern Python stack. 19 references, 19 self-testing templates, 1 end-to-end example.
+modern Python stack. 20 references, 21 self-testing templates, 1 end-to-end example.
 
 This is a **methodology + scaffolding** layer — rigor (the Iron Laws), references,
 and correct, self-testing templates you adapt to your own data and venue. It is not

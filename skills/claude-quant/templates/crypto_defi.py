@@ -130,6 +130,83 @@ def cash_and_carry_apr(funding_rate: float, intervals_per_day: int = 3) -> float
     return annualized_funding(funding_rate, intervals_per_day)
 
 
+def net_cash_and_carry_apr(
+    funding_rate: float,
+    borrow_apr: float = 0.0,
+    fee_per_leg: float = 0.0005,
+    n_legs: int = 4,
+    rebalance_slippage: float = 0.0,
+    holding_days: float = 365.0,
+    intervals_per_day: int = 3,
+) -> float:
+    """Net APR of the delta-neutral perp cash-and-carry, AFTER frictions.
+
+    Gross carry is the annualized funding harvested by the short-perp leg
+    (``cash_and_carry_apr``). From it we subtract three friction APRs:
+
+    1. Borrow cost (``borrow_apr``): the annualized rate paid to borrow the
+       spot leg (or the financing on the long-spot collateral). Already an APR,
+       subtracted directly.
+    2. Round-trip trading fees: ``n_legs`` taker fills (default 4 = open spot,
+       open perp, close spot, close perp) at ``fee_per_leg`` each. The total fee
+       drag ``n_legs * fee_per_leg`` is paid ONCE over the holding period, so it
+       is annualized by ``365 / holding_days`` to put it on an APR footing.
+    3. Rebalance slippage: ``rebalance_slippage`` is the total slippage cost
+       (fraction of notional) incurred re-hedging over the whole holding period;
+       it is likewise annualized by ``365 / holding_days``.
+
+        net_apr = gross_funding_apr
+                  - borrow_apr
+                  - (n_legs * fee_per_leg) * (365 / holding_days)
+                  - rebalance_slippage     * (365 / holding_days)
+
+    With any positive friction (borrow, fees, or slippage) the result is
+    strictly below the gross carry. Costs are expressed as fractions of the
+    (delta-neutral, roughly constant) notional; this assumes a single entry/exit
+    round trip plus periodic re-hedging, and ignores convexity in the hedge.
+
+    Causality / Iron Law: all inputs (realized funding, the borrow rate in
+    effect, the fees actually paid, and realized slippage) are observed at or
+    before the trade; this is an after-the-fact accounting identity with no
+    forward-looking term, so it is leak-free when fed lagged/realized inputs.
+
+    Parameters
+    ----------
+    funding_rate : float
+        Per-interval funding rate (decimal fraction).
+    borrow_apr : float
+        Annualized borrow/financing cost of the spot leg (decimal APR).
+    fee_per_leg : float
+        Taker fee per fill (fraction of notional). Default 5 bp.
+    n_legs : int
+        Number of fee-bearing fills in the round trip. Default 4.
+    rebalance_slippage : float
+        Total re-hedge slippage over the holding period (fraction of notional).
+    holding_days : float
+        Holding-period length in days, used to annualize one-off costs.
+    intervals_per_day : int
+        Funding intervals per day for the gross-funding annualization.
+
+    Returns
+    -------
+    float
+        Net carry APR (simple, non-compounded).
+    """
+    if fee_per_leg < 0.0:
+        raise ValueError("fee_per_leg must be >= 0")
+    if n_legs < 0:
+        raise ValueError("n_legs must be >= 0")
+    if rebalance_slippage < 0.0:
+        raise ValueError("rebalance_slippage must be >= 0")
+    if holding_days <= 0.0:
+        raise ValueError("holding_days must be > 0")
+    gross = cash_and_carry_apr(funding_rate, intervals_per_day)
+    annualize = 365.0 / holding_days
+    fee_drag = n_legs * fee_per_leg * annualize
+    slip_drag = rebalance_slippage * annualize
+    return gross - borrow_apr - fee_drag - slip_drag
+
+
 # --------------------------------------------------------------------------- #
 # Constant-product AMM (Uniswap-v2 style)
 # --------------------------------------------------------------------------- #
@@ -195,6 +272,62 @@ def impermanent_loss(price_ratio: float) -> float:
     if price_ratio <= 0:
         raise ValueError("price_ratio must be > 0")
     return 2.0 * math.sqrt(price_ratio) / (1.0 + price_ratio) - 1.0
+
+
+def lvr_constant_product(
+    sigma: float,
+    pool_value: float,
+    horizon_years: float,
+) -> float:
+    """Loss-Versus-Rebalancing (LVR) for a 50/50 constant-product AMM.
+
+    LVR (Milionis, Moallemi, Roughgarden & Zhang, 2022, "Automated Market
+    Making and Loss-Versus-Rebalancing") is the running cost an LP bears
+    relative to a continuously-rebalanced reference portfolio that holds the
+    same instantaneous exposure but trades at the external (CEX) price instead
+    of the stale pool price. For a geometric-mean (x*y=k, 50/50) pool with
+    instantaneous LVR rate ``(sigma^2 / 8) * pool_value`` per unit time, the
+    expected LVR accumulated over a horizon is
+
+        LVR = (sigma^2 / 8) * pool_value * horizon_years      (>= 0)
+
+    where ``sigma`` is the annualized volatility of the volatile asset's price
+    (in the numeraire) and the horizon is in years. Unlike impermanent loss,
+    LVR is monotonically increasing in time and is the loss net of the
+    arbitrageur's gain - i.e. the adverse-selection cost LPs pay to arbitrageurs.
+    It is the quantity LP fee income must exceed for an LP to be profitable.
+
+    This is the closed-form expectation for constant ``sigma`` and a pool whose
+    value is held ~constant over the window; it ignores fees, the discreteness
+    of arbitrage, and pool-value drift. Returned in the same units as
+    ``pool_value`` (a positive cost).
+
+    Causality / Iron Law: ``sigma`` must be a volatility estimate formed from
+    information available at or before the period start (e.g. a lagged realized
+    or implied vol); fed a forward-looking sigma this would leak. The formula
+    itself is a forward expectation and contains no same-bar future data.
+
+    Parameters
+    ----------
+    sigma : float
+        Annualized volatility of the volatile asset (decimal, e.g. 0.8 = 80%).
+    pool_value : float
+        Total pool value in the numeraire, >= 0.
+    horizon_years : float
+        Length of the holding window in years, >= 0.
+
+    Returns
+    -------
+    float
+        Expected LVR over the horizon (>= 0), in ``pool_value`` units.
+    """
+    if sigma < 0.0:
+        raise ValueError("sigma must be >= 0")
+    if pool_value < 0.0:
+        raise ValueError("pool_value must be >= 0")
+    if horizon_years < 0.0:
+        raise ValueError("horizon_years must be >= 0")
+    return (sigma * sigma / 8.0) * pool_value * horizon_years
 
 
 # --------------------------------------------------------------------------- #
@@ -276,6 +409,43 @@ def _run_tests() -> None:
     assert _approx(cash_and_carry_apr(0.0001, 3), annualized_funding(0.0001, 3))
     assert cash_and_carry_apr(-0.0001, 3) < 0.0  # negative funding -> pay to carry
 
+    # --- net cash and carry (after frictions) ---------------------------- #
+    gross = cash_and_carry_apr(0.0001, 3)  # 0.1095
+    # with zero frictions, net == gross (analytic anchor)
+    assert _approx(
+        net_cash_and_carry_apr(
+            0.0001, borrow_apr=0.0, fee_per_leg=0.0, n_legs=4, rebalance_slippage=0.0
+        ),
+        gross,
+    )
+    # any positive friction makes net strictly below gross
+    net = net_cash_and_carry_apr(
+        0.0001,
+        borrow_apr=0.02,
+        fee_per_leg=0.0005,
+        n_legs=4,
+        rebalance_slippage=0.001,
+        holding_days=365.0,
+    )
+    assert net < gross, "frictions reduce net below gross"
+    # explicit accounting identity over a full-year hold (annualize factor = 1):
+    #   net = 0.1095 - 0.02 - 4*0.0005 - 0.001 = 0.0865
+    assert _approx(net, 0.1095 - 0.02 - 4 * 0.0005 - 0.001)
+    # one-off costs annualize: a 73-day hold scales fee+slip drag by 365/73 = 5x
+    net_short = net_cash_and_carry_apr(
+        0.0001,
+        borrow_apr=0.0,
+        fee_per_leg=0.0005,
+        n_legs=4,
+        rebalance_slippage=0.001,
+        holding_days=73.0,
+    )
+    assert _approx(net_short, gross - (4 * 0.0005 + 0.001) * (365.0 / 73.0))
+    # shorter hold -> larger annualized drag -> lower net
+    assert net_short < net_cash_and_carry_apr(
+        0.0001, fee_per_leg=0.0005, n_legs=4, rebalance_slippage=0.001, holding_days=365.0
+    )
+
     # --- impermanent loss ------------------------------------------------ #
     assert _approx(impermanent_loss(1.0), 0.0), "no divergence -> no IL"
     assert _approx(impermanent_loss(2.0), -0.05719095841793653, tol=1e-9), "IL(2) ~ -5.72%"
@@ -286,6 +456,27 @@ def _run_tests() -> None:
         assert impermanent_loss(r) <= 0.0, f"IL must be <= 0 at r={r}"
     # IL deepens with larger divergence
     assert impermanent_loss(4.0) < impermanent_loss(2.0) < 0.0
+
+    # --- loss-versus-rebalancing (LVR) ----------------------------------- #
+    # IL at no price move is exactly zero, but LVR over a round trip is positive:
+    assert _approx(impermanent_loss(1.0), 0.0), "IL(1) == 0"
+    lvr = lvr_constant_product(sigma=0.8, pool_value=1_000_000.0, horizon_years=1.0)
+    assert lvr > 0.0, "LVR is positive over a holding window even if IL(1)=0"
+    # analytic anchor: (sigma^2 / 8) * V * T = (0.64/8) * 1e6 * 1 = 80_000
+    assert _approx(lvr, (0.8 ** 2 / 8.0) * 1_000_000.0 * 1.0)
+    assert _approx(lvr, 80_000.0)
+    # linear in horizon and in pool value; quadratic in sigma
+    assert _approx(
+        lvr_constant_product(0.8, 1_000_000.0, 2.0),
+        2.0 * lvr_constant_product(0.8, 1_000_000.0, 1.0),
+    )
+    assert _approx(
+        lvr_constant_product(1.6, 1_000_000.0, 1.0),
+        4.0 * lvr_constant_product(0.8, 1_000_000.0, 1.0),
+    )
+    # degenerate cases collapse to zero cost
+    assert _approx(lvr_constant_product(0.0, 1_000_000.0, 1.0), 0.0)
+    assert _approx(lvr_constant_product(0.8, 1_000_000.0, 0.0), 0.0)
 
     # --- AMM constant-product output ------------------------------------- #
     rin, rout = 1_000_000.0, 1_000_000.0

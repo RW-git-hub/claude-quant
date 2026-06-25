@@ -577,6 +577,170 @@ def delta_hedge_pnl(path, K: float, T: float, r: float, sigma_implied: float,
 
 
 # ----------------------------------------------------------------------
+# Variance swaps. A variance swap pays  N_var * (sigma_R^2 - K_var)  at
+# expiry, where sigma_R^2 is the annualized REALIZED variance over the life
+# and K_var is the fair strike (in variance units). The fair strike is the
+# risk-neutral expectation of realized variance, which - by the log-contract
+# replication of Demeterfi, Derman, Kamal & Zou (Goldman Sachs Quantitative
+# Strategies Research Notes, 1999, "More Than You Ever Wanted To Know About
+# Volatility Swaps", eq. 26-28) - equals a static portfolio of European OTM
+# options weighted 1/K^2. With the strip anchored exactly at the forward F
+# the boundary correction term vanishes and the fair variance reduces to
+#
+#     K_var = (2 e^{rT} / T) * sum_i  (dK_i / K_i^2) * O(K_i)
+#
+# where O(K_i) is the OTM option price (put for K_i<=F, call for K_i>F) and
+# dK_i is the strike spacing attributed to K_i (trapezoid weights). This is
+# the model-free fair variance: under a FLAT Black-Scholes IV surface it
+# recovers sigma^2 exactly in the continuum, and to second order on a grid.
+#
+# These functions price/aggregate a static replication portfolio at t=0 from
+# a quoted smile; they are not used inside a return-generating backtest loop,
+# so there is no look-ahead surface. (If you DO mark a swap through time,
+# feed only as-of, point-in-time IVs - the strip is causal by construction.)
+# ----------------------------------------------------------------------
+def var_swap_fair_strike(strikes, ivs, F: float, r: float, T: float) -> float:
+    """
+    Fair variance strike K_var (annualized variance, i.e. sigma^2 units) from a
+    discrete OTM-option strip via the 1/K^2-weighted log-contract replication
+    of Demeterfi-Derman-Kamal-Zou (1999).
+
+    Parameters
+    ----------
+    strikes : ascending sequence of strikes K_i (>0). Need at least 2.
+    ivs     : matching Black-76 implied vols (decimal) at each strike. The OTM
+              option is priced off the forward F: a PUT for K_i <= F, a CALL
+              for K_i > F (the liquid, out-of-the-money side).
+    F       : forward price of the underlying for expiry T (F = S e^{(r-q)T}).
+    r       : continuously-compounded discount rate (per year).
+    T       : time to expiry in YEARS (>0).
+
+    Method
+    ------
+    Black-76 forward option prices O(K_i) = e^{-rT} * BS_undiscounted(F, K_i),
+    obtained here by pricing bs_price with S=F, q=r (so the spot drift is zero
+    and S=forward). The fair variance is the trapezoid-weighted strip
+
+        K_var = (2 e^{rT} / T) * sum_i (dK_i / K_i^2) * O(K_i),
+
+    with dK_i the central strike spacing (forward/backward at the ends). With
+    the strip centered at F the Demeterfi et al. boundary term drops out, so a
+    flat IV surface returns sigma^2 (model-free, no skew assumed).
+
+    Causality: a pure t=0 valuation of a static option portfolio off an
+    as-of smile - no future information enters. Leak-free by construction.
+
+    Returns K_var (variance). sqrt(K_var) is the fair vol-swap-style strike.
+    """
+    Ks = [float(k) for k in strikes]
+    vs = [float(v) for v in ivs]
+    n = len(Ks)
+    if n < 2 or len(vs) != n:
+        raise ValueError("need >=2 strikes and matching ivs")
+    if T <= 0.0 or F <= 0.0:
+        raise ValueError("var_swap_fair_strike requires T>0 and F>0")
+    for i in range(1, n):
+        if not (Ks[i] > Ks[i - 1]):
+            raise ValueError("strikes must be strictly ascending and >0")
+    if Ks[0] <= 0.0:
+        raise ValueError("strikes must be >0")
+
+    disc = math.exp(-r * T)
+    acc = 0.0
+    for i in range(n):
+        K = Ks[i]
+        sig = vs[i]
+        # OTM side off the forward: put for K<=F, call for K>F.
+        kind = "put" if K <= F else "call"
+        # Price S=F with q=r => zero net drift, S equals the forward; the
+        # result is the forward (undiscounted) option value times disc.
+        o = bs_price(F, K, T, r, sig, r, kind)
+        # Trapezoid strike weight dK_i (central difference, half-step ends).
+        if i == 0:
+            dK = Ks[1] - Ks[0]
+        elif i == n - 1:
+            dK = Ks[n - 1] - Ks[n - 2]
+        else:
+            dK = 0.5 * (Ks[i + 1] - Ks[i - 1])
+        acc += (dK / (K * K)) * o
+
+    return (2.0 / T) * math.exp(r * T) * acc
+
+
+def var_swap_pnl(realized_var: float, k_var: float, vega_notional: float,
+                 dealer_cap: float = 2.5) -> dict:
+    """
+    Settlement P&L of a LONG variance swap (long realized variance) quoted in
+    VEGA notional, with the standard dealer variance cap.
+
+    A variance swap is conventionally struck in vega notional N_vega (P&L per
+    vol point near the strike) rather than variance notional N_var. The market
+    convention links them by
+
+        N_var = N_vega / (2 * sqrt(K_var)) = N_vega / (2 * k_vol),
+
+    i.e. N_var = N_vega / (2 * k_var_vol) where k_var_vol = sqrt(K_var) is the
+    strike in VOL units. Here `k_var` is passed in VOL units (a vol, e.g.
+    0.20), consistent with quoting a swap by its strike vol. The uncapped
+    payoff is
+
+        pnl = N_var * (realized_var - k_var^2),  realized_var in variance units.
+
+    Dealers cap realized variance at (dealer_cap * k_var)^2 (typically
+    dealer_cap = 2.5x the strike vol) to bound the short's loss on a vol spike:
+
+        realized_capped = min(realized_var, (dealer_cap * k_var)^2)
+        pnl_capped       = N_var * (realized_capped - k_var^2).
+
+    Sign convention: LONG variance gains when realized_var > k_var^2 (realized
+    vol beat the strike) and loses when it falls short.
+
+    Parameters
+    ----------
+    realized_var  : annualized realized variance over the swap life (sigma_R^2,
+                    variance units, e.g. 0.09 for 30% realized vol).
+    k_var         : strike in VOL units (e.g. 0.20). The variance strike is
+                    k_var**2.
+    vega_notional : N_vega, P&L per vol point ($ per 1.00 of vol; per vol
+                    *point* multiply your quote by 100 first if needed).
+    dealer_cap    : multiple of the strike vol at which realized variance is
+                    capped (default 2.5x). Set very large to disable.
+
+    Causality: a pure settlement calc on an already-observed realized variance;
+    nothing forward-looking. Safe to use at/after expiry in a backtest.
+
+    Returns a dict:
+        n_var           : variance notional N_var = N_vega / (2*k_var)
+        var_strike      : k_var**2 (variance units)
+        var_cap         : (dealer_cap*k_var)**2 (variance units)
+        realized_capped : min(realized_var, var_cap)
+        pnl_uncapped    : N_var * (realized_var - var_strike)
+        pnl             : N_var * (realized_capped - var_strike)  (capped P&L)
+        capped          : bool, whether the cap bound the payoff
+    """
+    if k_var <= 0.0:
+        raise ValueError("k_var (strike vol) must be > 0")
+    if dealer_cap <= 0.0:
+        raise ValueError("dealer_cap must be > 0")
+
+    n_var = vega_notional / (2.0 * k_var)
+    var_strike = k_var * k_var
+    var_cap = (dealer_cap * k_var) ** 2
+    realized_capped = min(realized_var, var_cap)
+    pnl_uncapped = n_var * (realized_var - var_strike)
+    pnl = n_var * (realized_capped - var_strike)
+    return {
+        "n_var": n_var,
+        "var_strike": var_strike,
+        "var_cap": var_cap,
+        "realized_capped": realized_capped,
+        "pnl_uncapped": pnl_uncapped,
+        "pnl": pnl,
+        "capped": realized_var > var_cap,
+    }
+
+
+# ----------------------------------------------------------------------
 # Self-tests: analytic identities + finite-difference checks on fixed
 # parameter sets, CRR convergence, and a seeded delta-hedge simulation.
 # Deterministic (seeded). Run `python options.py`.
@@ -856,5 +1020,71 @@ if __name__ == "__main__":
     gk = greeks(100.0, 100.0, 1.0, 0.03, 0.20, 0.0, "call")
     assert abs(gk["vanna"] - bs_vanna(100.0, 100.0, 1.0, 0.03, 0.20, 0.0)) < 1e-12
     assert abs(gk["charm"] - bs_charm(100.0, 100.0, 1.0, 0.03, 0.20, 0.0, "call")) < 1e-12
+
+    # ------------------------------------------------------------------
+    # Variance swaps (Demeterfi-Derman-Kamal-Zou 1999).
+    # ------------------------------------------------------------------
+    # 19) FLAT IV surface -> fair variance recovers sigma^2. Use a fine,
+    #     wide 1/K^2-weighted strip centered at the forward F. Model-free
+    #     replication must reproduce the Black-Scholes variance with no skew.
+    sig_flat = 0.20
+    r_vs, T_vs, q_vs = 0.03, 1.0, 0.0
+    S0 = 100.0
+    F_vs = forward_price(S0, r_vs, q_vs, T_vs)
+    # Dense strip well into both wings so the discretization/truncation error
+    # is small; flat smile so every iv equals sig_flat.
+    lo_k, hi_k, step = 20.0, 300.0, 0.5
+    nK = int(round((hi_k - lo_k) / step)) + 1
+    Ks_vs = [lo_k + j * step for j in range(nK)]
+    ivs_vs = [sig_flat for _ in Ks_vs]
+    kvar = var_swap_fair_strike(Ks_vs, ivs_vs, F_vs, r_vs, T_vs)
+    assert math.isfinite(kvar) and abs(kvar - sig_flat * sig_flat) < 1e-3, \
+        f"flat-IV fair variance {kvar} vs sigma^2 {sig_flat**2}"
+    # Fair vol = sqrt(K_var) recovers the input vol.
+    assert abs(math.sqrt(kvar) - sig_flat) < 2e-3, \
+        f"flat-IV fair vol {math.sqrt(kvar)} vs {sig_flat}"
+
+    # 20) Refinement: finer strike grid + wider wings shrinks the error toward
+    #     the continuum limit (monotone improvement is the replication check).
+    def _kvar_flat(lo, hi, st):
+        m = int(round((hi - lo) / st)) + 1
+        ks = [lo + j * st for j in range(m)]
+        return var_swap_fair_strike(ks, [sig_flat] * m, F_vs, r_vs, T_vs)
+    err_coarse = abs(_kvar_flat(40.0, 200.0, 5.0) - sig_flat ** 2)
+    err_fine = abs(_kvar_flat(20.0, 300.0, 0.5) - sig_flat ** 2)
+    assert err_fine < err_coarse, \
+        f"finer/wider strip should reduce fair-variance error: {err_fine} !< {err_coarse}"
+
+    # 21) var_swap_pnl: N_var linkage, sign, and the dealer cap.
+    k_vol = 0.20
+    n_vega = 100000.0
+    vs_at = var_swap_pnl(k_vol ** 2, k_vol, n_vega)  # realized == strike
+    assert abs(vs_at["n_var"] - n_vega / (2.0 * k_vol)) < 1e-9
+    assert abs(vs_at["var_strike"] - 0.04) < 1e-15
+    assert abs(vs_at["pnl"]) < 1e-6, f"at-the-strike P&L should be ~0: {vs_at['pnl']}"
+    assert not vs_at["capped"]
+
+    # Sign: realized > strike -> LONG variance gains; realized < strike -> loses.
+    hi_real = var_swap_pnl(0.30 ** 2, k_vol, n_vega)
+    lo_real = var_swap_pnl(0.10 ** 2, k_vol, n_vega)
+    assert hi_real["pnl"] > 0.0, f"realized>strike should profit: {hi_real['pnl']}"
+    assert lo_real["pnl"] < 0.0, f"realized<strike should lose: {lo_real['pnl']}"
+    # Magnitude matches N_var*(realized_var - var_strike) exactly when uncapped.
+    n_var = n_vega / (2.0 * k_vol)
+    assert abs(hi_real["pnl"] - n_var * (0.09 - 0.04)) < 1e-6
+    assert not hi_real["capped"] and not lo_real["capped"]
+
+    # Dealer cap (2.5x strike vol): a vol spike above the cap clamps the payoff.
+    spike_var = (3.0 * k_vol) ** 2          # 60% realized > cap of 2.5*20%=50%
+    capped = var_swap_pnl(spike_var, k_vol, n_vega, dealer_cap=2.5)
+    assert capped["capped"], "60% realized vs 2.5x cap should be capped"
+    assert abs(capped["realized_capped"] - (2.5 * k_vol) ** 2) < 1e-12
+    assert capped["pnl"] < capped["pnl_uncapped"], \
+        "cap must reduce the long's gain on a spike"
+    assert abs(capped["pnl"] - n_var * ((2.5 * k_vol) ** 2 - 0.04)) < 1e-6
+    # Just below the cap is NOT clamped and equals the uncapped payoff.
+    near = var_swap_pnl((2.49 * k_vol) ** 2, k_vol, n_vega, dealer_cap=2.5)
+    assert not near["capped"]
+    assert abs(near["pnl"] - near["pnl_uncapped"]) < 1e-9
 
     print("options.py: all self-tests passed.")

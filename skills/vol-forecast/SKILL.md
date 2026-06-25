@@ -24,7 +24,7 @@ One job: estimate vol on data up to t, forecast h-ahead, turn it into an inverse
 1. Open `skills/claude-quant/templates/regime.py`. Read the Conventions block (lines 8-18): functions return PER-PERIOD vol and are causal but do NOT lag for you.
 2. Pick an estimator, fit on returns up to t ONLY:
    - EWMA (RiskMetrics): `ewma_vol(returns, lam=0.94)` (~0.97 monthly). Note its recursion uses `r[t-1]^2`, so the value at t already is the one-step-ahead forecast — no fit needed.
-   - GARCH(1,1): `garch11_fit(returns)` then `garch11_filter(returns, **p)` for the conditional path. For h>1, iterate the variance recursion forward; it mean-reverts toward `omega/(1-alpha-beta)`. There is NO forecast helper — compute it yourself.
+   - GARCH(1,1): `garch11_fit(returns)` then `garch11_filter(returns, **p)` for the conditional path; for an h-step-ahead forecast use `garch11_forecast(returns, **p, horizon=h)` (or `gjr_garch11_forecast`) — it returns the causal variance path and the correctly summed h-period cumulative variance (NOT sqrt(h)-scaled), mean-reverting toward `omega/(1-alpha-beta)`.
    - HAR-RV: `har_rv(rv, horizon=h)` in regime.py — strictly trailing, one-step-ahead (first 22 entries NaN). Build RV from intraday data with `realized_variance(intraday_returns)`.
 3. Annualize: per-period vol × `sqrt(ppy)` (252/52/12). For an h-period horizon, variance adds, so vol scales by `sqrt(h)`.
 4. Size: `vol_target_scale(forecast_vol, target_vol, max_leverage)` in regime.py — scale = target/forecast, clipped. Keep forecast and target on the SAME units/horizon.

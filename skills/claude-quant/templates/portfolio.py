@@ -414,6 +414,146 @@ def black_litterman(
 
 
 # ---------------------------------------------------------------------------
+# Cost-aware rebalancing (turnover reduction)
+# ---------------------------------------------------------------------------
+# These helpers take a freshly computed *target* book `w_target` and the
+# *currently held* book `w_prev` and return a traded-to book that deliberately
+# trades less than the naive "jump straight to target". Trading less saves
+# transaction costs at the price of some tracking error to the model target.
+#
+# Iron-Law / causality note: each function depends ONLY on `w_target` (the
+# signal-derived target for the *upcoming* holding period) and `w_prev` (the
+# book you already hold, known at decision time). Neither peeks at future
+# returns, so all three are leak-free and safe to call inside a backtest's
+# rebalance step. The standard usage is, at each rebalance date t:
+#     w_held[t] = apply_turnover_band(model_target[t], w_held[t-1], band)
+# i.e. `w_prev` is last period's *post-trade* book — strictly past information.
+#
+# `turnover` here is the conventional one-way turnover
+#     T = 0.5 * sum_i |w_i - w_prev_i|
+# (the fraction of the book replaced); cost per rebalance is roughly
+# cost_rate * 2 * T for a round trip, or cost_rate * (sum |Δw|) one notional
+# leg. Lower turnover => lower cost, which is the whole point of these helpers.
+
+
+def turnover(w_new: np.ndarray, w_prev: np.ndarray) -> float:
+    """One-way (Lhabitant) turnover between two books: 0.5·Σ|w_new − w_prev|.
+
+    The fraction of the portfolio notionally replaced going from `w_prev` to
+    `w_new`. For two fully-invested (sum-1) long books this lies in [0, 1].
+    Causal: a pure function of two known weight vectors, no future data.
+    """
+    a = np.asarray(w_new, dtype=float).ravel()
+    b = np.asarray(w_prev, dtype=float).ravel()
+    if a.shape[0] != b.shape[0]:
+        raise ValueError("w_new and w_prev dimensions disagree")
+    return 0.5 * float(np.abs(a - b).sum())
+
+
+def shrink_to_prev(
+    w_target: np.ndarray, w_prev: np.ndarray, lam: float
+) -> np.ndarray:
+    """Linear shrinkage of the target book toward the prior book, renormalized.
+
+    Returns w = (1−lam)·w_target + lam·w_prev, then renormalized to sum 1.
+    `lam` in [0, 1] is the fraction of "stickiness": lam=0 trades all the way to
+    the target, lam=1 stays at the prior book (zero turnover). Because turnover
+    is linear in the traded vector and this is a convex blend, realized turnover
+    equals (1−lam)·turnover(w_target, w_prev) before renormalization — i.e. it
+    decreases monotonically as `lam` rises. This is the classic
+    "partial-rebalance" / inventory-smoothing trick for cutting trading costs.
+
+    Causal: depends only on the model target and the previously held book; no
+    look-ahead. Safe inside a backtest rebalance step.
+    """
+    if not (0.0 <= lam <= 1.0):
+        raise ValueError("lam must be in [0, 1]")
+    wt = np.asarray(w_target, dtype=float).ravel()
+    wp = np.asarray(w_prev, dtype=float).ravel()
+    if wt.shape[0] != wp.shape[0]:
+        raise ValueError("w_target and w_prev dimensions disagree")
+    blended = (1.0 - lam) * wt + lam * wp
+    return _normalize(blended)
+
+
+def apply_turnover_band(
+    w_target: np.ndarray,
+    w_prev: np.ndarray,
+    band: float,
+) -> np.ndarray:
+    """No-trade band rebalancing: only move names whose drift exceeds `band`.
+
+    For each asset, if |w_target_i − w_prev_i| <= band we *hold* the prior weight
+    (no trade on that name); otherwise we trade that name, but only part-way —
+    to the edge of the band, i.e. toward the target by exactly `band`:
+
+        Δ_i = w_target_i − w_prev_i
+        traded_i = w_prev_i                                  if |Δ_i| <= band
+                 = w_prev_i + sign(Δ_i)·(|Δ_i| − band)       otherwise
+
+    This is the standard rectangular no-trade region used to damp turnover from
+    estimation noise (cf. Davis-Norman / Leland transaction-cost rebalancing,
+    and the "tolerance band" rebalancing of practitioner portfolios). Pulling
+    only to the band edge (rather than all the way to target) is what makes the
+    rule *cost-aware*: each unit of widening `band` strictly cannot increase the
+    L1 trade size of any name, so realized turnover is non-increasing in `band`.
+
+    The traded book is renormalized to sum 1 (the per-name capping breaks the
+    budget slightly; a single renorm restores it). With band=0 the result is
+    exactly `w_target`; with band large enough to cover every drift it is exactly
+    `w_prev` (zero turnover) — both checked in the self-tests.
+
+    Causal / leak-free: a deterministic function of the model target and the
+    previously held book only. Safe to call at each backtest rebalance date.
+    """
+    if band < 0.0:
+        raise ValueError("band must be non-negative")
+    wt = np.asarray(w_target, dtype=float).ravel()
+    wp = np.asarray(w_prev, dtype=float).ravel()
+    if wt.shape[0] != wp.shape[0]:
+        raise ValueError("w_target and w_prev dimensions disagree")
+    delta = wt - wp
+    mag = np.abs(delta)
+    # Soft-threshold the drift: shrink each move toward 0 by `band`, floored at 0.
+    capped_move = np.sign(delta) * np.clip(mag - band, 0.0, None)
+    traded = wp + capped_move
+    return _normalize(traded)
+
+
+def no_trade_region(
+    w_target: np.ndarray,
+    w_prev: np.ndarray,
+    band: float,
+) -> np.ndarray:
+    """Hard no-trade region: hold names inside the band, jump the rest to target.
+
+    A stricter variant of `apply_turnover_band`. Names whose drift |Δ_i| <= band
+    are held flat; names that breach the band are traded *all the way* to the
+    model target (not merely to the band edge):
+
+        traded_i = w_prev_i      if |w_target_i − w_prev_i| <= band
+                 = w_target_i     otherwise
+
+    Use this when you want a clean "rebalance the breachers fully, ignore the
+    rest" policy; use `apply_turnover_band` when you want the gentler
+    pull-to-edge that minimizes traded notional. Renormalized to sum 1. As
+    `band` widens, the set of traded names shrinks, so realized turnover is
+    non-increasing in `band`; band large enough returns `w_prev` exactly.
+
+    Causal / leak-free: depends only on the model target and the held book.
+    """
+    if band < 0.0:
+        raise ValueError("band must be non-negative")
+    wt = np.asarray(w_target, dtype=float).ravel()
+    wp = np.asarray(w_prev, dtype=float).ravel()
+    if wt.shape[0] != wp.shape[0]:
+        raise ValueError("w_target and w_prev dimensions disagree")
+    breach = np.abs(wt - wp) > band
+    traded = np.where(breach, wt, wp)
+    return _normalize(traded)
+
+
+# ---------------------------------------------------------------------------
 # Self-tests
 # ---------------------------------------------------------------------------
 def _make_corr_cov(vols: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -513,5 +653,69 @@ if __name__ == "__main__":
     w_sing = min_variance_weights(cov_sing)  # ridge kicks in
     assert abs(w_sing.sum() - 1.0) < 1e-8
     assert np.all(np.isfinite(w_sing))
+
+    # --- Cost-aware rebalancing -------------------------------------------
+    w_prev = np.array([0.25, 0.25, 0.25, 0.25])
+    w_tgt = np.array([0.40, 0.30, 0.20, 0.10])
+
+    # turnover anchor: one-way turnover = 0.5*sum|Δ| = 0.5*(0.15+0.05+0.05+0.15)=0.20
+    assert abs(turnover(w_tgt, w_prev) - 0.20) < 1e-12, turnover(w_tgt, w_prev)
+    # passthrough: trading to where you already are => zero turnover
+    assert turnover(w_prev, w_prev) == 0.0
+
+    # apply_turnover_band: band=0 reproduces the target exactly
+    w_b0 = apply_turnover_band(w_tgt, w_prev, band=0.0)
+    assert abs(w_b0.sum() - 1.0) < 1e-12
+    assert np.allclose(w_b0, w_tgt, atol=1e-12), w_b0
+
+    # w_prev passthrough: target == prev => zero turnover, book unchanged
+    w_pass = apply_turnover_band(w_prev, w_prev, band=0.05)
+    assert abs(w_pass.sum() - 1.0) < 1e-12
+    assert turnover(w_pass, w_prev) < 1e-12, w_pass
+
+    # realized turnover is NON-INCREASING as the band widens
+    bands = [0.0, 0.02, 0.05, 0.10, 0.20, 0.50]
+    to_band = [turnover(apply_turnover_band(w_tgt, w_prev, b), w_prev) for b in bands]
+    for k in range(1, len(to_band)):
+        assert to_band[k] <= to_band[k - 1] + 1e-12, (bands[k], to_band)
+    # and STRICTLY decreases over a widening that bites (0 -> 0.05)
+    assert to_band[2] < to_band[0] - 1e-9, to_band
+    # a band wide enough to cover every drift collapses to w_prev (zero turnover)
+    w_wide = apply_turnover_band(w_tgt, w_prev, band=0.30)
+    assert abs(w_wide.sum() - 1.0) < 1e-12
+    assert np.allclose(w_wide, w_prev, atol=1e-12), w_wide
+
+    # analytic anchor for the pull-to-edge rule at band=0.05 (before renorm the
+    # capped book already sums to 1 here since +moves and -moves are symmetric):
+    #   Δ = [+.15,+.05,-.05,-.15], soft-threshold by .05 -> [+.10,0,0,-.10]
+    #   traded = prev + that = [.35,.25,.25,.15]
+    w_edge = apply_turnover_band(w_tgt, w_prev, band=0.05)
+    assert np.allclose(w_edge, np.array([0.35, 0.25, 0.25, 0.15]), atol=1e-12), w_edge
+
+    # shrink_to_prev: lam=0 -> target, lam=1 -> prev, monotone turnover in lam
+    assert np.allclose(shrink_to_prev(w_tgt, w_prev, 0.0), w_tgt, atol=1e-12)
+    assert np.allclose(shrink_to_prev(w_tgt, w_prev, 1.0), w_prev, atol=1e-12)
+    lams = [0.0, 0.25, 0.5, 0.75, 1.0]
+    to_lam = [turnover(shrink_to_prev(w_tgt, w_prev, l), w_prev) for l in lams]
+    for k in range(1, len(to_lam)):
+        assert to_lam[k] <= to_lam[k - 1] + 1e-12, (lams[k], to_lam)
+    # linearity anchor: turnover at lam == (1-lam)*turnover_at_0 (convex blend,
+    # both books sum to 1 so renorm is a no-op)
+    assert abs(to_lam[2] - 0.5 * to_lam[0]) < 1e-12, to_lam
+    # w_prev passthrough -> zero turnover regardless of lam
+    assert turnover(shrink_to_prev(w_prev, w_prev, 0.3), w_prev) < 1e-12
+    # all shrink outputs still sum to 1
+    for l in lams:
+        assert abs(shrink_to_prev(w_tgt, w_prev, l).sum() - 1.0) < 1e-12
+
+    # no_trade_region: band=0 -> target, wide band -> prev, monotone turnover
+    assert np.allclose(no_trade_region(w_tgt, w_prev, 0.0), w_tgt, atol=1e-12)
+    w_ntr_wide = no_trade_region(w_tgt, w_prev, 0.30)
+    assert np.allclose(w_ntr_wide, w_prev, atol=1e-12), w_ntr_wide
+    to_ntr = [turnover(no_trade_region(w_tgt, w_prev, b), w_prev) for b in bands]
+    for k in range(1, len(to_ntr)):
+        assert to_ntr[k] <= to_ntr[k - 1] + 1e-12, (bands[k], to_ntr)
+    for b in bands:
+        assert abs(no_trade_region(w_tgt, w_prev, b).sum() - 1.0) < 1e-12
 
     print("portfolio.py: all self-tests passed.")

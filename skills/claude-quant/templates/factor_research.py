@@ -216,6 +216,142 @@ def ic_summary(ic: pd.Series) -> Dict[str, float]:
     return dict(mean_ic=mean_ic, ic_std=ic_std, ic_ir=ic_ir, t_stat=t_stat, hit_rate=hit_rate)
 
 
+def _newey_west_lrv(x: np.ndarray, nw_lags: int) -> float:
+    """Newey-West (1987) HAC long-run variance of the MEAN of x.
+
+    Returns an estimate of Var(mean(x)) that is robust to autocorrelation up to
+    `nw_lags` lags using the Bartlett kernel w_k = 1 - k/(nw_lags+1):
+
+        S = gamma_0 + 2 * sum_{k=1..L} w_k * gamma_k      (long-run variance of x)
+        Var(mean) = S / n
+
+    where gamma_k = (1/n) * sum_t (x_t - xbar)(x_{t-k} - xbar) is the biased
+    (divide-by-n) sample autocovariance. With nw_lags=0 this collapses to the iid
+    estimate gamma_0 / n = (population) variance / n. The Bartlett weights
+    guarantee S >= 0 (positive semidefinite), so the returned variance is never
+    negative. Reference: Newey & West, Econometrica 55 (1987), 703-708.
+
+    PURELY DESCRIPTIVE on a realized IC series — uses no future data per element,
+    but it is a full-sample statistic and so is NOT a causal backtest signal.
+    """
+    n = x.size
+    if n < 2:
+        return float("nan")
+    xc = x - x.mean()
+    gamma0 = float(xc @ xc) / n
+    s = gamma0
+    L = min(int(nw_lags), n - 1)
+    for k in range(1, L + 1):
+        w = 1.0 - k / (nw_lags + 1.0)
+        gamma_k = float(xc[k:] @ xc[:-k]) / n
+        s += 2.0 * w * gamma_k
+    s = max(s, 0.0)  # Bartlett kernel is PSD; guard tiny negative FP drift
+    return s / n
+
+
+def ic_summary_hac(ic: pd.Series, nw_lags: int = 5) -> Dict[str, float]:
+    """ic_summary plus a Newey-West (HAC) t-stat of the mean IC.
+
+    Overlapping forward-return windows make consecutive ICs autocorrelated, which
+    inflates the naive iid t-stat (it assumes independent ICs). The HAC t-stat
+    divides the mean IC by a Newey-West standard error that accounts for serial
+    correlation up to `nw_lags`, and is the honest significance number for an
+    overlapping panel.
+
+    Returns every key from ic_summary plus:
+      t_stat_hac : mean_ic / sqrt(NW long-run var of the mean), nw_lags Bartlett.
+      nw_lags    : the lag truncation actually requested.
+
+    With positively autocorrelated ICs (the usual overlapping case) t_stat_hac is
+    typically SMALLER in magnitude than the iid t_stat — that shrinkage is the
+    point. Hand-rolled in numpy; see _newey_west_lrv for the math/reference.
+    """
+    base = ic_summary(ic)
+    x = ic.dropna().to_numpy(dtype=float)
+    n = x.size
+    if n < 2:
+        base.update(t_stat_hac=np.nan, nw_lags=int(nw_lags))
+        return base
+    var_mean = _newey_west_lrv(x, nw_lags)
+    se = np.sqrt(var_mean) if np.isfinite(var_mean) and var_mean > 0 else np.nan
+    t_stat_hac = float(x.mean() / se) if np.isfinite(se) and se != 0 else np.nan
+    base.update(t_stat_hac=t_stat_hac, nw_lags=int(nw_lags))
+    return base
+
+
+# ---------------------------------------------------------------------------
+# IC decay — how fast does the signal's edge fade over the holding horizon?
+# ---------------------------------------------------------------------------
+def ic_decay(
+    factor_df: pd.DataFrame,
+    fwd_returns: pd.DataFrame,
+    horizons,
+    method: str = "spearman",
+) -> pd.Series:
+    """Mean IC of the factor at t vs the h-step-ahead PER-ASSET forward return.
+
+    `fwd_returns.loc[t, a]` is the one-step forward return of asset a known after
+    date t (same convention as everywhere in this file: it is the t -> t+1
+    return). For horizon h we correlate factor_t with the return realized h steps
+    later, i.e. fwd_returns shifted UP by (h - 1) rows so that row t holds the
+    t+h-1 -> t+h return. h=1 reproduces the contemporaneous one-step IC.
+
+    LEAK-SAFE ALIGNMENT: the panel is first sorted by date (ascending) so "shift
+    up by k" is unambiguously "later in time"; we never look backward. shift(-k)
+    pulls a FUTURE row's return back to align with the present factor (correct:
+    the factor is known now, the return is realized later) and the last k rows
+    become NaN and are dropped per-date — no wrap-around, no look-ahead. The
+    factor itself is never shifted, so no future factor value ever enters.
+
+    Returns a Series indexed by horizon h, value = mean over dates of the per-date
+    cross-sectional IC at that horizon. A real signal shows IC highest at short
+    horizons and decaying toward 0 as h grows.
+    """
+    f = factor_df.sort_index()
+    fr = fwd_returns.reindex_like(f).sort_index()
+    out = pd.Series(np.nan, index=pd.Index(list(horizons), name="horizon"), dtype=float)
+    for h in horizons:
+        if h < 1:
+            raise ValueError("horizons must be >= 1")
+        shifted = fr.shift(-(int(h) - 1))  # row t now holds the t+h-1 -> t+h return
+        ic_h = information_coefficient(f, shifted, method=method)
+        out.loc[h] = float(ic_h.dropna().mean()) if ic_h.notna().any() else np.nan
+    return out
+
+
+def ic_half_life(decay: pd.Series) -> float:
+    """Horizon at which mean IC first falls to <= half its h=1 (peak) value.
+
+    Linearly interpolates between the bracketing horizons for a fractional
+    half-life. Expects the Series returned by ic_decay (index = horizons). Returns
+    NaN if the first horizon's IC is non-positive (no decay to measure) or if IC
+    never reaches half within the supplied horizons.
+
+    Purely descriptive summary of an IC-decay curve; not a tradable signal.
+    """
+    d = decay.dropna()
+    if d.empty:
+        return float("nan")
+    hs = np.asarray(d.index, dtype=float)
+    vals = d.to_numpy(dtype=float)
+    order = np.argsort(hs)
+    hs, vals = hs[order], vals[order]
+    peak = vals[0]
+    if peak <= 0:
+        return float("nan")
+    target = peak / 2.0
+    for i in range(1, len(vals)):
+        if vals[i] <= target:
+            # interpolate between (hs[i-1], vals[i-1]) and (hs[i], vals[i])
+            v0, v1 = vals[i - 1], vals[i]
+            h0, h1 = hs[i - 1], hs[i]
+            if v0 == v1:
+                return float(h1)
+            frac = (v0 - target) / (v0 - v1)
+            return float(h0 + frac * (h1 - h0))
+    return float("nan")
+
+
 # ---------------------------------------------------------------------------
 # Quantile (decile/quintile) portfolios — does the factor sort returns?
 # ---------------------------------------------------------------------------
@@ -283,6 +419,142 @@ def quantile_spread_summary(qr: pd.DataFrame, periods_per_year: int = 252) -> Di
     )
     monotonic = bool(np.all(np.diff(bucket_means.to_numpy(dtype=float)) > 0))
     return dict(mean_spread=mean_spread, spread_sharpe=spread_sharpe, monotonic=monotonic)
+
+
+def _quantile_weights(
+    factor_df: pd.DataFrame,
+    q: int,
+    weight: str,
+    mktcap_df: pd.DataFrame | None,
+):
+    """Per-date long-top / short-bottom weights for the q-bucket spread portfolio.
+
+    Yields (t, w_t) where w_t is a Series over that date's valid assets summing to
+    0 (long top bucket, short bottom bucket). 'equal' splits each leg evenly;
+    'cap' weights each leg PROPORTIONAL to that name's market cap within its
+    bucket (a value-weighted spread, as published factor returns usually are).
+
+    LEAK-SAFE: weights for date t use only the factor and the market cap known AS
+    OF date t; nothing from t+1 enters. mktcap_df is aligned (reindexed) to the
+    factor grid and a name is dropped from a date whenever its cap is missing or
+    non-positive (a cap weight needs a strictly positive cap).
+    """
+    if weight not in ("equal", "cap"):
+        raise ValueError("weight must be 'equal' or 'cap'")
+    if weight == "cap" and mktcap_df is None:
+        raise ValueError("weight='cap' requires an aligned mktcap_df panel")
+
+    cap = mktcap_df.reindex_like(factor_df) if mktcap_df is not None else None
+    labels = list(range(1, q + 1))
+
+    for t in factor_df.index:
+        f = factor_df.loc[t]
+        if cap is not None:
+            block = pd.concat([f, cap.loc[t]], axis=1).dropna()
+            block = block[block.iloc[:, 1] > 0.0]  # caps must be strictly positive
+            if len(block) < q:
+                continue
+            f = block.iloc[:, 0]
+            c = block.iloc[:, 1]
+        else:
+            f = f.dropna()
+            if len(f) < q:
+                continue
+            c = None
+
+        ranks = f.rank(method="first")
+        try:
+            buckets = pd.qcut(ranks, q, labels=labels)
+        except ValueError:
+            continue
+        top = f.index[buckets == q]
+        bot = f.index[buckets == 1]
+        if len(top) == 0 or len(bot) == 0:
+            continue
+
+        w = pd.Series(0.0, index=f.index)
+        if weight == "equal":
+            w.loc[top] = 1.0 / len(top)
+            w.loc[bot] = -1.0 / len(bot)
+        else:
+            ct, cb = c.loc[top], c.loc[bot]
+            w.loc[top] = (ct / ct.sum()).to_numpy()
+            w.loc[bot] = (-cb / cb.sum()).to_numpy()
+        yield t, w
+
+
+def weighted_quantile_spread(
+    factor_df: pd.DataFrame,
+    fwd_ret_df: pd.DataFrame,
+    q: int = 5,
+    weight: str = "equal",
+    mktcap_df: pd.DataFrame | None = None,
+) -> pd.Series:
+    """Per-date top-minus-bottom spread return under equal- OR cap-weighting.
+
+    Builds, per date, a dollar-neutral long-top / short-bottom portfolio (the same
+    extremes as quantile_returns' 'spread' column) and returns its forward return
+    series. weight='equal' equal-weights each leg (matches quantile_returns'
+    spread up to qcut tie handling); weight='cap' value-weights each leg by an
+    aligned market-cap panel — the convention behind most published factor
+    premia, since equal weighting over-loads tiny illiquid names.
+
+    LEAK-SAFE: weights at date t come only from factor_t and mktcap_t (known as of
+    t); they multiply fwd_ret_t (realized after t). The factor and caps are never
+    forward-shifted. Returns a Series indexed by date.
+    """
+    if q < 2:
+        raise ValueError("q must be >= 2")
+    fr = fwd_ret_df.reindex_like(factor_df)
+    out: Dict[pd.Timestamp, float] = {}
+    for t, w in _quantile_weights(factor_df, q, weight, mktcap_df):
+        r = fr.loc[t]
+        pair = pd.concat([w.rename("w"), r.rename("r")], axis=1).dropna()
+        if pair.empty:
+            continue
+        out[t] = float((pair["w"] * pair["r"]).sum())
+    s = pd.Series(out, dtype=float)
+    s.index.name = factor_df.index.name
+    return s.sort_index()
+
+
+def turnover(
+    factor_df: pd.DataFrame,
+    q: int = 5,
+    weight: str = "equal",
+    mktcap_df: pd.DataFrame | None = None,
+) -> pd.Series:
+    """Two-sided per-date turnover of the long-top/short-bottom spread portfolio.
+
+    Turnover_t = sum_a |w_t(a) - w_{t-1}(a)|, the total absolute weight traded to
+    move from yesterday's target weights to today's. For a dollar-neutral spread
+    with +1 long notional and -1 short notional, a full rebalance into disjoint
+    names tends toward ~4 (sell 1 long + cover 1 short + buy 1 long + short 1).
+    Multiply by per-unit cost to charge the spread its trading cost.
+
+    LEAK-SAFE / CAUSAL: weights on each date use only information known AS OF that
+    date (factor_t, mktcap_t); turnover_t differences today's target against the
+    PRIOR date's target, so it consumes no future data and is safe to charge in a
+    backtest. The first traded date has no predecessor and is omitted.
+
+    Missing assets are treated as zero weight on the dates they are absent, so an
+    entry/exit counts its full weight as traded. Returns a Series indexed by date
+    (one shorter than the number of traded dates).
+    """
+    weights = list(_quantile_weights(factor_df, q, weight, mktcap_df))
+    if len(weights) < 2:
+        return pd.Series(dtype=float, name="turnover")
+    dates = [t for t, _ in weights]
+    full = (
+        pd.DataFrame({t: w for t, w in weights})
+        .T.reindex(columns=factor_df.columns)
+        .fillna(0.0)
+    )
+    delta = full.diff().abs().sum(axis=1)
+    to = delta.iloc[1:]  # first date has no prior target
+    to.index = pd.Index(dates[1:], name=factor_df.index.name)
+    to.name = "turnover"
+    return to
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +654,88 @@ def _run_self_tests() -> None:
     assert qs["mean_spread"] > 0, "mean spread must be positive"
     assert qs["monotonic"] is True, "bucket means must be monotone increasing"
     assert qs["spread_sharpe"] > 0, "spread Sharpe positive"
+
+    # --- HAC / Newey-West IC t-stat on an OVERLAPPING panel -------------------
+    # Build an IC series with genuine POSITIVE serial correlation: a noisy factor
+    # (so per-date IC is modest and varies) paired with an overlapping 5-step
+    # cumulative forward return. Overlapping windows share component returns, which
+    # induces positive autocorrelation in the IC series. The Newey-West SE then
+    # exceeds the iid SE, so |t_stat_hac| <= |t_stat|.
+    rng_h = np.random.default_rng(321)
+    Th, Nh = F.shape
+    Fz_h = cross_sectional_zscore(F)
+    # weak signal + large noise so ICs are small and noisy (not pinned near 1)
+    fwd_h = 0.01 * Fz_h + pd.DataFrame(
+        0.08 * rng_h.standard_normal((Th, Nh)), index=F.index, columns=F.columns
+    )
+    overlap = 5
+    fwd_overlap = fwd_h.rolling(overlap).sum().shift(-(overlap - 1))  # t..t+4 cum, leak-safe
+    ic_ov = information_coefficient(F, fwd_overlap, method="spearman")
+    # confirm the planted positive autocorrelation actually exists (lag-1 rho > 0)
+    icv = ic_ov.dropna().to_numpy(float)
+    icv_c = icv - icv.mean()
+    rho1 = float((icv_c[1:] @ icv_c[:-1]) / (icv_c @ icv_c))
+    assert rho1 > 0.0, f"overlapping IC must be positively autocorrelated: rho1={rho1}"
+    sh = ic_summary_hac(ic_ov, nw_lags=overlap)
+    s_ov = ic_summary(ic_ov)
+    assert np.isclose(sh["t_stat"], s_ov["t_stat"], equal_nan=True), "HAC must reuse iid t_stat"
+    assert np.isfinite(sh["t_stat_hac"]), "HAC t-stat must be finite"
+    assert abs(sh["t_stat_hac"]) <= abs(sh["t_stat"]) + 1e-9, (
+        f"HAC t {sh['t_stat_hac']} must be <= iid t {sh['t_stat']} on overlapping panel"
+    )
+    # nw_lags=0 collapses to the iid SE up to the ddof convention: the HAC long-run
+    # variance uses the divide-by-n (biased) autocovariance gamma_0 (= var ddof=0)
+    # while the iid t_stat uses std(ddof=1), so the HAC SE is smaller by
+    # sqrt((n-1)/n) and t_stat_hac = t_stat * sqrt(n/(n-1)) at lag 0.
+    sh0 = ic_summary_hac(ic_ov, nw_lags=0)
+    n_ov = ic_ov.dropna().shape[0]
+    assert np.isclose(
+        sh0["t_stat_hac"], sh0["t_stat"] * np.sqrt(n_ov / (n_ov - 1))
+    ), "nw_lags=0 must match iid t-stat up to the ddof factor"
+
+    # --- IC decay: declines with horizon on a decaying planted signal ---------
+    # Plant fwd[t] driven by factor[t] with a fast geometric fade across the next
+    # few one-step returns, so longer holding horizons see weaker IC.
+    rng_d = np.random.default_rng(99)
+    Td, Nd = F.shape
+    Fz_d = cross_sectional_zscore(F)
+    decay_fac = 0.45
+    fwd_decay = pd.DataFrame(0.0, index=F.index, columns=F.columns)
+    for k in range(6):  # factor at t-k feeds returns k steps later, geometrically fading
+        fwd_decay += (decay_fac ** k) * 0.05 * Fz_d.shift(k)
+    fwd_decay += pd.DataFrame(0.01 * rng_d.standard_normal((Td, Nd)), index=F.index, columns=F.columns)
+    horizons = [1, 2, 3, 5, 8]
+    dec = ic_decay(F, fwd_decay, horizons, method="spearman")
+    assert dec.loc[1] > dec.loc[8], f"IC must decay: h1 {dec.loc[1]} !> h8 {dec.loc[8]}"
+    assert dec.loc[1] >= dec.loc[3] >= dec.loc[8] - 1e-9, "IC should decline (near-)monotonically"
+    hl = ic_half_life(dec)
+    assert np.isfinite(hl) and hl > 1.0, f"half-life should be finite and > 1: {hl}"
+
+    # --- cap- vs equal-weighted quantile spread: distinct, both signed --------
+    rng_c = np.random.default_rng(2024)
+    mktcap = pd.DataFrame(
+        np.exp(rng_c.standard_normal((Td, Nd))) * 1e6,  # lognormal caps, strictly positive
+        index=F.index, columns=F.columns,
+    )
+    sp_eq = weighted_quantile_spread(F, fwd, q=5, weight="equal")
+    sp_cap = weighted_quantile_spread(F, fwd, q=5, weight="cap", mktcap_df=mktcap)
+    assert sp_eq.mean() > 0 and sp_cap.mean() > 0, "both spreads should be positive on planted signal"
+    # equal-weighted spread reproduces quantile_returns' spread (same extremes)
+    assert np.isclose(sp_eq.mean(), qr["spread"].dropna().mean(), atol=1e-9), "equal spread == qr spread"
+    # cap weighting changes the realized spread series materially
+    common = sp_eq.index.intersection(sp_cap.index)
+    assert not np.allclose(sp_eq.loc[common].to_numpy(), sp_cap.loc[common].to_numpy()), (
+        "cap-weighted spread must differ from equal-weighted"
+    )
+
+    # --- turnover: two-sided, non-negative, ~4 for a full disjoint rebalance ---
+    to_eq = turnover(F, q=5, weight="equal")
+    assert (to_eq >= -1e-12).all(), "turnover must be non-negative"
+    assert len(to_eq) == F.shape[0] - 1, "turnover is one shorter than the number of traded dates"
+    # equal-weight dollar-neutral spread fully reshuffles each date -> ~4
+    assert 0.0 < to_eq.mean() <= 4.0 + 1e-9, f"two-sided turnover in (0,4]: {to_eq.mean()}"
+    to_cap = turnover(F, q=5, weight="cap", mktcap_df=mktcap)
+    assert (to_cap >= -1e-12).all() and to_cap.mean() > 0, "cap turnover non-negative and positive"
 
     # --- Fama-MacBeth: premium on the factor positive and significant ---------
     fm = fama_macbeth(fwd, F)

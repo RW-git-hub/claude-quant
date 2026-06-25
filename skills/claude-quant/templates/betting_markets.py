@@ -226,6 +226,233 @@ def kelly_fraction(prob: float, decimal_odds: float) -> float:
     return max(0.0, f)
 
 
+def joint_kelly(
+    probs: ArrayLike,
+    decimal_odds: ArrayLike,
+    cov: ArrayLike | None = None,
+    frac: float = 1.0,
+    cap: float | None = None,
+) -> np.ndarray:
+    """Growth-optimal stake VECTOR for n simultaneous binary bets (correlated allowed).
+
+    Maximizes expected log-wealth E[log(1 + sum_i f_i * R_i)] EXACTLY over the full
+    outcome lattice of the n bets, where each bet's per-unit return is
+
+        R_i = +b_i  if leg i wins   (b_i = decimal_odds_i - 1, the net odds)
+        R_i = -1    if leg i loses.
+
+    With n bets there are 2**n joint win/lose outcomes; their probabilities come from the
+    Gaussian-copula construction below (so marginals match `probs` and pairwise wins are
+    correlated by `cov`). The returned f sums-to-bankroll-fraction stakes (no leverage
+    assumed beyond what makes 1 + f.R > 0 in every state). Negative entries are allowed
+    (a hedge against a correlated leg) unless they would imply shorting an unavailable
+    bet -- here we keep the unconstrained log-optimal vector, then floor at 0 component-
+    wise only if `cap` is None? No: we DO NOT silently floor; see below.
+
+    Method
+    ------
+    1. Start from the Gaussian/Markowitz approximation  f0 = Sigma^-1 @ mu, where
+       mu_i = E[R_i] = p_i*b_i - (1-p_i) = p_i*(b_i+1) - 1 (the per-unit EV, == EV of the
+       bet), and Sigma is the covariance of the return vector R. This is the small-stake
+       limit of the Kelly criterion (Thorp 2006, "The Kelly Capital Growth Investment
+       Criterion"; Markowitz tangency / log-utility quadratic approximation).
+    2. Newton-Raphson refine on the EXACT objective L(f) = sum_s P_s * log(1 + f . R_s)
+       over outcome states s. Gradient g = sum_s P_s * R_s / (1 + f.R_s); Hessian
+       H = -sum_s P_s * (R_s R_s^T) / (1 + f.R_s)^2 (negative-definite => concave =>
+       unique max). Step f <- f - H^-1 g with a backtracking guard that keeps every
+       1 + f.R_s > 0 (wealth strictly positive in all states).
+
+    Parameters
+    ----------
+    probs : length-n win probabilities p_i in (0,1) (use DEVIGGED / fair probs).
+    decimal_odds : length-n decimal odds D_i > 1; net odds b_i = D_i - 1.
+    cov : optional n-by-n correlation matrix of the win INDICATORS (1 if leg i wins).
+          Diagonal is ignored (Bernoulli variance p_i(1-p_i) is used). Off-diagonal
+          rho_ij in [-1,1] couples the legs via a Gaussian copula. Default None =>
+          independent legs.
+    frac : fractional-Kelly multiplier applied to the final vector (e.g. 0.25). Default 1.
+    cap : optional per-leg absolute cap; each |f_i| is clipped to `cap` AFTER `frac`.
+
+    Returns
+    -------
+    np.ndarray of length n: stake fractions of bankroll.
+
+    Leak-free / Iron-Law note
+    -------------------------
+    Pure function of pre-event inputs (fair probs, quoted odds, your correlation estimate).
+    It NEVER consumes the realized outcome, so it is causal and safe to call inside a
+    backtest at decision time. Estimate `probs`/`cov` from information available strictly
+    before event start.
+
+    Reduces to `kelly_fraction` for n == 1 (single-bet Kelly), and the joint stake on
+    positively-correlated legs is SMALLER than the naive sum of independent single-bet
+    Kelly fractions (correlation is risk you must pay for).
+    """
+    p = np.asarray(probs, dtype=float).reshape(-1)
+    D = np.asarray(decimal_odds, dtype=float).reshape(-1)
+    n = p.shape[0]
+    if D.shape[0] != n:
+        raise ValueError("probs and decimal_odds must have the same length")
+    if np.any((p <= 0.0) | (p >= 1.0)):
+        raise ValueError("each probability must lie strictly in (0, 1)")
+    if np.any(D <= 1.0):
+        raise ValueError("each decimal_odds must be > 1")
+    b = D - 1.0  # net odds
+
+    # Win/lose return matrix R[s, i] for each of the 2**n joint states s, and the
+    # per-state probability P[s] under a Gaussian copula with marginals p_i.
+    masks = np.array([[(s >> i) & 1 for i in range(n)] for s in range(2 ** n)], dtype=int)
+    # masks[s, i] == 1 means leg i WINS in state s.
+    R = np.where(masks == 1, b[None, :], -1.0)
+
+    if cov is None:
+        rho = np.eye(n)
+    else:
+        rho = np.asarray(cov, dtype=float)
+        if rho.shape != (n, n):
+            raise ValueError("cov must be an n-by-n matrix")
+        rho = rho.copy()
+        np.fill_diagonal(rho, 1.0)
+        if np.any(np.abs(rho) > 1.0 + 1e-12):
+            raise ValueError("correlation entries must lie in [-1, 1]")
+
+    P = _lattice_probs(p, rho, masks)
+
+    # mu = E[R] (per-leg EV); Sigma = Cov(R) under the joint law (for the warm start).
+    mu = P @ R                       # length n
+    ER2 = np.einsum("s,si,sj->ij", P, R, R)  # n x n  E[R_i R_j]
+    Sigma = ER2 - np.outer(mu, mu)
+    # Gaussian-approx Kelly start: f0 = Sigma^-1 mu (Markowitz / small-stake Kelly).
+    f = np.linalg.solve(Sigma + 1e-12 * np.eye(n), mu)
+
+    # Keep the start strictly feasible (1 + f.R_s > 0 for all states).
+    def feasible(fv: np.ndarray) -> bool:
+        return bool(np.all(1.0 + R @ fv > 1e-9))
+
+    if not feasible(f):
+        scale = 1.0
+        while scale > 1e-12 and not feasible(f * scale):
+            scale *= 0.5
+        f = f * scale
+
+    # Newton-Raphson on the exact expected-log-wealth objective (concave).
+    for _ in range(100):
+        w = 1.0 + R @ f                       # wealth multiplier per state
+        inv = 1.0 / w
+        grad = (P * inv) @ R                  # length n
+        # Hessian = -sum_s P_s inv_s^2 R_s R_s^T
+        WR = R * (P * inv * inv)[:, None]
+        H = -(WR.T @ R)
+        try:
+            step = np.linalg.solve(H, grad)   # Newton step = -H^-1 grad (grad - here +)
+        except np.linalg.LinAlgError:
+            break
+        step = -step
+        # Backtracking line search keeping feasibility and increasing the objective.
+        t = 1.0
+        f_obj = float(P @ np.log(w))
+        while t > 1e-12:
+            f_new = f + t * step
+            if feasible(f_new):
+                obj_new = float(P @ np.log(1.0 + R @ f_new))
+                if obj_new >= f_obj - 1e-15:
+                    break
+            t *= 0.5
+        f_new = f + t * step
+        if np.max(np.abs(f_new - f)) < 1e-12:
+            f = f_new
+            break
+        f = f_new
+
+    f = frac * f
+    if cap is not None:
+        f = np.clip(f, -abs(cap), abs(cap))
+    return f
+
+
+def _lattice_probs(p: np.ndarray, rho: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """Joint probabilities of the 2**n win/lose states under a Gaussian copula.
+
+    Each leg i wins iff a standard normal Z_i exceeds threshold t_i = Phi^-1(1 - p_i),
+    with Corr(Z) = rho. State probabilities are the orthant masses of the multivariate
+    normal, computed by exact recursion for n <= 2 and by Monte-Carlo (seeded, so the
+    result is deterministic and leak-free) for n >= 3. Marginals match p_i exactly.
+    """
+    from statistics import NormalDist
+
+    nd = NormalDist()
+    n = p.shape[0]
+    t = np.array([nd.inv_cdf(1.0 - pi) for pi in p])  # win iff Z_i > t_i
+
+    if n == 1:
+        return np.array([p[0] if masks[s, 0] == 1 else 1.0 - p[0] for s in range(2)])
+
+    if n == 2:
+        r = float(rho[0, 1])
+        # Bivariate normal upper-orthant prob P(Z0 > t0, Z1 > t1).
+        p11 = _bvn_upper(t[0], t[1], r, nd)
+        out = np.empty(4)
+        for s in range(4):
+            w0 = masks[s, 0] == 1
+            w1 = masks[s, 1] == 1
+            if w0 and w1:
+                out[s] = p11
+            elif w0 and not w1:
+                out[s] = p[0] - p11
+            elif (not w0) and w1:
+                out[s] = p[1] - p11
+            else:
+                out[s] = 1.0 - p[0] - p[1] + p11
+        return np.clip(out, 0.0, 1.0) / np.sum(np.clip(out, 0.0, 1.0))
+
+    # n >= 3: seeded Monte-Carlo over the Gaussian copula (deterministic).
+    L = np.linalg.cholesky(rho + 1e-12 * np.eye(n))
+    rng = np.random.default_rng(0)
+    m = 400_000
+    Z = rng.standard_normal((m, n)) @ L.T
+    wins = (Z > t[None, :]).astype(int)  # m x n
+    # Map each sample to a state index and tally.
+    idx = wins @ (1 << np.arange(n))
+    counts = np.bincount(idx, minlength=2 ** n).astype(float)
+    return counts / counts.sum()
+
+
+def _bvn_upper(h: float, k: float, r: float, nd) -> float:
+    """P(X > h, Y > k) for standard bivariate normal with correlation r.
+
+    Drezner-Wesolowsky (1990) Gauss-Legendre quadrature of the bivariate density;
+    accurate to ~1e-10. Uses statistics.NormalDist for the univariate CDF -- no scipy.
+    """
+    import math
+
+    # P(X>h, Y>k) = P(X<=-h, Y<=-k) by symmetry; compute Phi2(-h,-k; r).
+    dh, dk = -h, -k
+    if abs(r) < 1e-15:
+        return nd.cdf(dh) * nd.cdf(dk)
+
+    # 10-point Gauss-Legendre nodes/weights on [0, r] for the standard formula
+    # Phi2(dh,dk;r) = Phi(dh)Phi(dk) + integral_0^r phi2(dh,dk;t) dt.
+    x = np.array(
+        [0.1488743389816312, 0.4333953941292472, 0.6794095682990244,
+         0.8650633666889845, 0.9739065285171717]
+    )
+    wts = np.array(
+        [0.2955242247147529, 0.2692667193099963, 0.2190863625159820,
+         0.1494513491505806, 0.0666713443086881]
+    )
+    nodes = np.concatenate([-x, x])
+    weights = np.concatenate([wts, wts])
+
+    a = 0.5 * r
+    s = 0.0
+    for node, wt in zip(nodes, weights):
+        tt = a * node + a  # map [-1,1] -> [0, r]
+        denom = 1.0 - tt * tt
+        s += wt * math.exp(-(dh * dh + dk * dk - 2.0 * tt * dh * dk) / (2.0 * denom)) / math.sqrt(denom)
+    integral = a * s / (2.0 * math.pi)
+    return nd.cdf(dh) * nd.cdf(dk) + integral
+
+
 # --------------------------------------------------------------------------- #
 # Calibration / forecast quality                                             #
 # --------------------------------------------------------------------------- #
@@ -339,6 +566,52 @@ if __name__ == "__main__":
     p_, d_ = 0.55, 2.10
     b_ = d_ - 1.0
     assert abs(kelly_fraction(p_, d_) - (p_ * b_ - (1 - p_)) / b_) < TOL
+
+    # --- Joint Kelly ---
+    # (a) Single-bet reduction: joint_kelly with n==1 equals kelly_fraction.
+    jk1 = joint_kelly([0.55], [2.10])
+    assert jk1.shape == (1,)
+    assert abs(jk1[0] - kelly_fraction(0.55, 2.10)) < 1e-7, jk1[0]
+    jk1b = joint_kelly([0.6], [2.0])
+    assert abs(jk1b[0] - kelly_fraction(0.6, 2.0)) < 1e-7  # == 0.2
+    # Independent two-bet case: each leg is staked CLOSE TO but slightly BELOW its own
+    # single-bet Kelly (simultaneous bets can both lose, adding variance the single-bet
+    # formula ignores). Symmetric inputs => equal stakes.
+    jk_ind = joint_kelly([0.55, 0.55], [2.10, 2.10], cov=None)
+    k_single = kelly_fraction(0.55, 2.10)
+    assert abs(jk_ind[0] - jk_ind[1]) < 1e-9  # symmetry
+    assert jk_ind[0] < k_single and jk_ind[0] > 0.9 * k_single  # close, slightly under
+
+    # (b) Positive correlation shrinks the joint stake vs naive summed single-bet Kelly.
+    p2, d2 = [0.55, 0.55], [2.10, 2.10]
+    naive = np.array([kelly_fraction(p2[0], d2[0]), kelly_fraction(p2[1], d2[1])])
+    rho_pos = np.array([[1.0, 0.6], [0.6, 1.0]])
+    jk_corr = joint_kelly(p2, d2, cov=rho_pos)
+    assert np.all(jk_corr > 0.0)  # still positive-edge bets
+    # Each correlated leg is staked LESS than its standalone Kelly...
+    assert jk_corr[0] < naive[0] and jk_corr[1] < naive[1]
+    # ...and the total joint stake is below the naive sum of single-bet Kellys.
+    assert jk_corr.sum() < naive.sum()
+    # Stronger correlation => even smaller joint stake (monotone risk penalty).
+    rho_hi = np.array([[1.0, 0.9], [0.9, 1.0]])
+    jk_hi = joint_kelly(p2, d2, cov=rho_hi)
+    assert jk_hi.sum() < jk_corr.sum()
+
+    # (c) Fractional Kelly scales the vector linearly.
+    jk_half = joint_kelly(p2, d2, cov=rho_pos, frac=0.5)
+    assert np.allclose(jk_half, 0.5 * jk_corr, atol=1e-9)
+    # (d) Cap clips per-leg magnitude.
+    jk_cap = joint_kelly(p2, d2, cov=rho_pos, cap=0.01)
+    assert np.all(np.abs(jk_cap) <= 0.01 + 1e-12) and np.any(np.abs(jk_cap) >= 0.01 - 1e-9)
+
+    # (e) Optimality anchor: returned f is a stationary point of E[log wealth] (grad ~ 0).
+    f_opt = joint_kelly(p2, d2, cov=rho_pos)
+    b_ = np.array([d2[0] - 1.0, d2[1] - 1.0])
+    masks_ = np.array([[(s >> i) & 1 for i in range(2)] for s in range(4)], dtype=int)
+    R_ = np.where(masks_ == 1, b_[None, :], -1.0)
+    P_ = _lattice_probs(np.asarray(p2, float), rho_pos, masks_)
+    grad_ = (P_ / (1.0 + R_ @ f_opt)) @ R_
+    assert np.max(np.abs(grad_)) < 1e-6, grad_
 
     # --- Calibration ---
     assert abs(brier_score([1.0, 0.0], [1, 0]) - 0.0) < TOL  # perfect

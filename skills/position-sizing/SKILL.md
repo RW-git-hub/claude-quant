@@ -31,7 +31,7 @@ Decide how much to allocate per position/bet. Map the request to one sizing regi
 ## Open
 - `skills/claude-quant/templates/risk.py`, `skills/claude-quant/templates/portfolio.py`
 - `skills/claude-quant/references/risk-management.md` §5 (Kelly, risk of ruin, leverage), §6 (exposure limits)
-- `skills/claude-quant/references/portfolio-optimization.md` §5 (ERC), §6 (HRP)
+- `skills/claude-quant/references/portfolio-optimization.md` §5 (ERC). Many correlated/concentrated names, HRP, shrinkage, or Markowitz → hand off to `portfolio-architect`.
 
 ## Gotchas
 - Full Kelly assumes a KNOWN edge and is brutally volatile — size at 1/4-1/2 Kelly.

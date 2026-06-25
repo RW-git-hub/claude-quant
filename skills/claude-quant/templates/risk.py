@@ -717,6 +717,164 @@ def christoffersen_cc(
 
 
 # --------------------------------------------------------------------------- #
+# Expected Shortfall backtest: Acerbi-Szekely (2014) Z2
+# --------------------------------------------------------------------------- #
+def acerbi_szekely_z2(
+    returns: ArrayLike,
+    var_series: ArrayLike,
+    es_series: ArrayLike,
+    level: float = 0.05,
+    n_boot: int = 5000,
+    seed: Optional[int] = 0,
+) -> Dict[str, float]:
+    """Acerbi-Szekely (2014) 'Z2' Expected-Shortfall backtest with a seeded
+    simulated null p-value. Tests whether a sequence of ES forecasts is
+    consistent with the realized returns -- the joint analogue of Kupiec for ES,
+    which (unlike VaR) is NOT directly elicitable and so needs this test.
+
+    Reference: Acerbi, C. & Szekely, B. (2014), "Backtesting Expected Shortfall",
+    Risk Magazine, Dec 2014. This is their second statistic Z2 ("unconditional
+    test"), which needs only that ES_t be a valid forecast and does NOT require
+    simulating from a fully specified model under H1.
+
+    Statistic. Acerbi-Szekely write it in POSITIVE-loss terms (L = -X, ES+ = -ES,
+    both positive; a breach is L_t > VaR+_t):
+
+        Z2 = -( 1 / (N * level) ) * sum_t [ (L_t / ES+_t) * I(L_t > VaR+_t) ]  +  1
+
+    In THIS module's signed convention (VaR/ES are NEGATIVE returns, loss is
+    negative, an exception is X_t < VaR_t) the ratio L_t/ES+_t = X_t/ES_t (the two
+    minus signs cancel and it is positive), so equivalently:
+
+        Z2 = -( 1 / (N * level) ) * sum_t [ (X_t / ES_t) * I(X_t < VaR_t) ]  +  1
+
+    Intuition: on each breach day X_t/ES_t = (realized tail loss)/(forecast tail
+    loss). Under H0 (ES_t is the true tail mean) the expected number of breaches
+    is N*level and the average breach ratio is 1, so the sum/(N*level) -> 1, the
+    leading term -> -1, and E[Z2] = 0. If the model UNDER-forecasts risk (|ES| too
+    small), realized breach losses exceed the forecast, X_t/ES_t > 1 on breaches,
+    the sum exceeds N*level and Z2 < 0. So Z2 < 0 is the risky direction; we
+    reject in the LEFT tail (large negative Z2 = ES too optimistic).
+
+    IRON LAW / leak-free usage
+    --------------------------
+    `var_series` and `es_series` MUST be CAUSAL: the forecast for period t may use
+    information only through t-1 (lag your rolling estimator). This function does
+    NOT lag for you -- it compares X_t to VaR_t / ES_t element-wise. The rolling
+    output of filtered_historical_var_es is already causal and can be passed
+    directly. NaN forecasts (e.g. an FHS warm-up window) are dropped pairwise
+    along with their realized return before the statistic is formed, so a warm-up
+    prefix does not bias the test.
+
+    Null distribution / p-value
+    ---------------------------
+    Under H0 the breach indicator I(X_t < VaR_t) is Bernoulli(level) and, given a
+    breach, the standardized tail loss X_t/ES_t has mean 1. We approximate the
+    finite-sample null distribution of Z2 by a SEEDED parametric bootstrap: for
+    each of `n_boot` replications we draw, for every period, a breach with
+    probability `level`, and on a breach a standardized loss whose mean is 1 (we
+    resample the EMPIRICAL standardized breach losses X_t/ES_t observed in-sample
+    when at least a few breaches exist, otherwise fall back to a unit-mean
+    Exponential -- the GPD xi->0 tail mean). This Monte-Carlo null is the
+    distribution-free recipe Acerbi-Szekely recommend; the seed makes it
+    reproducible. The one-sided p-value is
+
+        p = P( Z2_null <= Z2_observed )
+
+    so a SMALL p (e.g. < 0.05) rejects H0 in the risky (ES under-forecast)
+    direction. A well-specified ES gives Z2 ~ 0 and a large p.
+
+    Returns dict(z2, p_value, n, n_exceptions, expected_exceptions, level,
+    mean_breach_ratio). `mean_breach_ratio` = mean(X_t/ES_t over breaches): ~1 if
+    the ES magnitude is right, >1 if ES is under-forecast.
+    """
+    _validate_level(level)
+    x = np.asarray(returns, dtype=float).ravel()
+    v = np.asarray(var_series, dtype=float).ravel()
+    e = np.asarray(es_series, dtype=float).ravel()
+    if not (x.shape == v.shape == e.shape):
+        raise ValueError(
+            f"shapes must match: returns {x.shape}, var {v.shape}, es {e.shape}"
+        )
+    # Drop pairwise NaNs (warm-up windows etc.) so no future/missing data leaks.
+    good = ~(np.isnan(x) | np.isnan(v) | np.isnan(e))
+    x, v, e = x[good], v[good], e[good]
+    n = x.size
+    if n < 2:
+        raise ValueError("need at least 2 aligned non-NaN observations")
+    if np.any(e >= 0.0):
+        raise ValueError(
+            "es_series must be strictly negative (a loss) in this module's sign "
+            "convention; pass ES as a signed return, not a positive magnitude"
+        )
+
+    breach = x < v  # exception: realized return below the VaR forecast
+    n_exc = int(np.sum(breach))
+    # standardized tail losses X_t / ES_t on breach days (both negative -> >0,
+    # ~1 when ES magnitude matches the realized breach loss).
+    ratios = (x[breach] / e[breach]) if n_exc > 0 else np.array([], dtype=float)
+    # Z2 = -sum(ratio)/(N*level) + 1; centers at 0 under H0, < 0 if ES under-forecast.
+    z2 = float(-np.sum(ratios) / (n * level) + 1.0)
+    mean_breach_ratio = float(np.mean(ratios)) if n_exc > 0 else float("nan")
+
+    # --- seeded simulated null distribution of Z2 -------------------------- #
+    rng = np.random.default_rng(seed)
+    # Pool of unit-mean standardized losses to draw a breach magnitude from.
+    if ratios.size >= 5:
+        pool = ratios / float(np.mean(ratios))  # re-center to mean exactly 1
+    else:
+        pool = None  # too few breaches to resample empirically; use Exp(1)
+    z2_null = _simulate_z2_null(rng, n, level, pool, n_boot)
+    p_value = float(np.mean(z2_null <= z2))
+
+    return {
+        "z2": z2,
+        "p_value": p_value,
+        "n": float(n),
+        "n_exceptions": float(n_exc),
+        "expected_exceptions": float(n * level),
+        "level": float(level),
+        "mean_breach_ratio": mean_breach_ratio,
+    }
+
+
+def _simulate_z2_null(
+    rng: np.random.Generator,
+    n: int,
+    level: float,
+    pool: Optional[np.ndarray],
+    n_boot: int,
+) -> np.ndarray:
+    """Seeded Monte-Carlo null distribution of the Acerbi-Szekely Z2 statistic.
+
+    Under H0 each period is a breach with probability `level` (Bernoulli), and on
+    a breach the standardized loss X_t/ES_t has mean 1. We draw that magnitude by
+    resampling the in-sample unit-mean breach ratios (`pool`, mean re-centered to
+    exactly 1) when enough breaches exist, otherwise from a unit-mean Exponential
+    (the GPD xi->0 tail-mean default). Each breach contributes -ratio (mean -1) to
+    the leading term, so
+
+        Z2 = -sum(ratio_breach) / (N * level) + 1
+
+    centers at 0 under H0 (and is 1 when no breaches occur). Returns an array of
+    `n_boot` simulated Z2 values.
+    """
+    z2_null = np.empty(n_boot, dtype=float)
+    for b in range(n_boot):
+        hits = rng.random(n) < level
+        k = int(np.sum(hits))
+        if k == 0:
+            z2_null[b] = 1.0  # no breaches -> sum 0 -> Z2 = 1
+            continue
+        if pool is not None:
+            draws = pool[rng.integers(0, pool.size, size=k)]
+        else:
+            draws = rng.exponential(scale=1.0, size=k)  # unit-mean tail loss
+        z2_null[b] = float(-np.sum(draws) / (n * level) + 1.0)
+    return z2_null
+
+
+# --------------------------------------------------------------------------- #
 # risk of ruin
 # --------------------------------------------------------------------------- #
 def risk_of_ruin(
@@ -1071,6 +1229,62 @@ def _run_self_tests() -> None:
     clustered[600:640] = 1
     c_clust = christoffersen(clustered)
     assert c_clust["p_value_ind"] < 0.05, c_clust
+
+    # ===================================================================== #
+    # Acerbi-Szekely (2014) Z2 ES backtest
+    # ===================================================================== #
+    # (a) WELL-SPECIFIED ES: the causal FHS VaR/ES from filtered_historical_var_es
+    # is built from the SAME GARCH-t DGP it is tested on, so its ES is consistent
+    # with the realized tail. Z2 should sit near 0 and NOT be rejected.
+    az_var, az_es = filtered_historical_var_es(
+        garch, level=0.05, lam=0.94, min_obs=250, rolling=True
+    )
+    az_ok = acerbi_szekely_z2(
+        garch, az_var, az_es, level=0.05, n_boot=4000, seed=0
+    )
+    assert az_ok["n_exceptions"] > 0, az_ok
+    assert abs(az_ok["z2"]) < 0.30, ("well-specified ES Z2 should be ~0", az_ok)
+    assert az_ok["p_value"] > 0.05, ("well-specified ES wrongly rejected", az_ok)
+    assert abs(az_ok["mean_breach_ratio"] - 1.0) < 0.30, az_ok
+
+    # (b) MIS-SPECIFIED ES: a Gaussian VaR/ES forecast applied to fat-tailed
+    # Student-t(df=3) returns UNDER-forecasts the FAR tail. At level=0.01 the t(3)
+    # tail is far heavier than Gaussian, so there are BOTH more breaches than
+    # expected AND each realized breach loss exceeds the Gaussian ES (X/ES > 1):
+    # Z2 << 0 and the test REJECTS. (At 5% the two effects partly offset -- the
+    # known limitation that Z2 mixes breach count with breach magnitude -- so we
+    # use the deep tail where the misspecification is unambiguous.)
+    bad_level = 0.01
+    rng_az = np.random.default_rng(2024)
+    df_t = 3.0
+    t_rets = rng_az.standard_t(df_t, size=5000) / math.sqrt(df_t / (df_t - 2.0))
+    t_rets = t_rets * 0.01  # unit-variance t scaled to ~1% daily vol
+    mu_t, sd_t = float(np.mean(t_rets)), float(np.std(t_rets, ddof=1))
+    zc = _NORM.inv_cdf(bad_level)
+    phi = math.exp(-0.5 * zc * zc) / math.sqrt(2.0 * math.pi)
+    g_var = np.full(t_rets.shape, mu_t + sd_t * zc)
+    g_es = np.full(t_rets.shape, mu_t - sd_t * phi / bad_level)  # Gaussian ES (tame)
+    az_bad = acerbi_szekely_z2(
+        t_rets, g_var, g_es, level=bad_level, n_boot=4000, seed=0
+    )
+    assert az_bad["z2"] < az_ok["z2"], (az_bad["z2"], az_ok["z2"])
+    assert az_bad["z2"] < -0.5, ("Gaussian ES on fat tails should give Z2<<0", az_bad)
+    assert az_bad["mean_breach_ratio"] > 1.0, az_bad  # losses exceed forecast ES
+    assert az_bad["p_value"] < 0.05, ("fat-tailed ES not rejected?!", az_bad)
+
+    # (c) pairwise NaN warm-up forecasts are dropped (no leak / no bias)
+    az_nan_v = az_var.copy()
+    az_nan_e = az_es.copy()
+    az_nan = acerbi_szekely_z2(garch, az_nan_v, az_nan_e, level=0.05, seed=0)
+    assert az_nan["n"] == float(np.sum(~np.isnan(az_var))), az_nan
+    # (d) guard: a positive-magnitude ES (wrong sign convention) raises
+    try:
+        acerbi_szekely_z2(
+            t_rets, g_var, np.abs(g_es), level=0.05, seed=0
+        )
+        raise AssertionError("expected ValueError for positive es_series")
+    except ValueError:
+        pass
 
     # --- risk_of_ruin monotone in bet_fraction ----------------------------
     common = dict(

@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.1.0 — 2026-06-25
+
+Major capability + routing-validation release, from two more multi-agent workflows (a 13-feature
+build pass and a routing-eval + body-consistency pass).
+
+### Added — templates (numpy/pandas-only; all self-testing)
+- **`attribution.py`** (new) — Brinson-Fachler allocation/selection/interaction, Carino (1999)
+  multi-period linking (with the guarded 0/0 limit), factor attribution, Perold implementation
+  shortfall. Backed by the new `references/attribution.md`.
+- **`microstructure.py`** (new) — order-flow imbalance, microprice, Roll spread, VPIN,
+  Avellaneda-Stoikov quoting.
+- `robustness.py` — Hansen (2005) **SPA test** (`spa_pvalue`, studentized + recentered).
+- `factor_research.py` — HAC/Newey-West IC t-stat (`ic_summary_hac`), `ic_decay`/`ic_half_life`,
+  cap-weighted quantile spread, two-sided `turnover`.
+- `regime.py` — multi-step `garch11_forecast`/`gjr_garch11_forecast` (correctly summed h-period
+  variance, not √h) and `qlike_loss`/`mse_loss`/`diebold_mariano`.
+- `risk.py` — Acerbi-Szekely (2014) ES backtest (`acerbi_szekely_z2`).
+- `portfolio.py` — turnover-band / no-trade-region / shrink-to-prev cost-aware rebalancing.
+- `labeling.py` — sample-weight primitives (`num_concurrent_events`, `time_decay_weights`,
+  `sequential_bootstrap`, `trend_scanning_labels`).
+- `options.py` — variance-swap fair strike (DDKZ log-contract strip) + capped var-swap P&L.
+- `betting_markets.py` — correlated `joint_kelly`; `crypto_defi.py` — net cash-and-carry + LVR;
+  `costs.py` — `cost_sweep`/`capacity_curve` + `day_count`; `pretrade_checks.py` —
+  duplicate-clOrdID / self-cross rejection + per-symbol gross marks.
+
+Template count 19 → **21**, references 19 → **20**. **21/21 self-tests pass.**
+
+### Changed — routing (empirically validated)
+- A 39-prompt blind routing-regression eval scored **39/39 (100%)**, including the adversarial
+  collision cases the 2.0.3 rewrites targeted.
+- A body-vs-description consistency pass fixed **9** agent/skill bodies that still claimed a
+  capability their description had ceded — e.g. `backtest-auditor` now defers the deflated-Sharpe
+  verdict to `overfitting-detective`; `volatility-strategist` consumes rather than produces the vol
+  forecast; `vol-forecast`/`overfitting-detective` cite the new `garch11_forecast`/`spa_pvalue`;
+  `options-quant`'s inventory was corrected to list the greeks/CRR/var-swap it actually ships.
+
 ## 2.0.3 — 2026-06-25
 
 Routing/activation overhaul + correctness fixes, from a 48-agent audit-and-research workflow

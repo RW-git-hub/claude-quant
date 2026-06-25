@@ -618,6 +618,343 @@ def har_rv(rv: ArrayLike, horizon: int = 1, use_log: bool = False
 
 
 # --------------------------------------------------------------------------- #
+# 2d. Multi-step variance forecasts (GARCH / GJR) + forecast evaluation
+# --------------------------------------------------------------------------- #
+def garch11_forecast(returns: ArrayLike, omega: float, alpha: float,
+                     beta: float, horizon: int = 1) -> Dict[str, object]:
+    """h-step-ahead conditional-variance FORECAST PATH for GARCH(1,1).
+
+    Builds on `garch11_filter`: it runs the causal filter through the last
+    observation r_T (using data ONLY up to T -- leak-free, you could form this
+    at the close of T), then iterates the variance recursion forward WITHOUT new
+    shocks, replacing the unknown future r_{T+k-1}^2 by its conditional
+    expectation h_{T+k-1}:
+
+        h_{T+1}     = omega + alpha * r_T^2 + beta * h_T          (one-step)
+        E[h_{T+k}]  = omega + (alpha + beta) * E[h_{T+k-1}],  k >= 2
+
+    because E[r_{T+k-1}^2 | F_T] = E[h_{T+k-1} | F_T] for k >= 2 (zero-mean
+    innovations with unit variance). This is the standard closed-form GARCH
+    forecast (Hull; Andersen-Bollerslev-Christoffersen-Diebold, "Volatility and
+    Correlation Forecasting", 2006). With persistence p = alpha + beta < 1 the
+    path mean-reverts geometrically to the unconditional variance
+    V = omega/(1 - p):
+        E[h_{T+k}] = V + p^k * (h_{T+1} - V).
+
+    CUMULATIVE (h-period) variance is the SUM of the per-step path variances,
+        cum_var(h) = sum_{k=1}^{h} E[h_{T+k}],
+    NOT h * h_{T+1} and emphatically NOT a sqrt(h) scaling of a single vol: the
+    sqrt(h) "square-root-of-time" rule assumes CONSTANT per-period variance and
+    is wrong under GARCH mean-reversion (it over-states multi-day risk when vol
+    is currently elevated and under-states it when vol is currently calm). The
+    correct multi-horizon vol is sqrt(cum_var(h)).
+
+    CAUSAL: every value uses returns only through T. To trade on it, the usual
+    position lag still applies. This returns a FORECAST for the future; it does
+    not peek at future returns.
+
+    Parameters
+    ----------
+    returns : per-period simple returns (history through T).
+    omega, alpha, beta : GARCH(1,1) parameters (e.g. from `garch11_fit`).
+    horizon : number of steps h >= 1 to forecast forward.
+
+    Returns
+    -------
+    dict with:
+        var_path     : np.ndarray shape (h,) of E[h_{T+k}], k = 1..h (per-step
+                       variance forecasts).
+        vol_path     : np.ndarray shape (h,) = sqrt(var_path) (per-step vol).
+        cum_var      : float, sum_{k=1}^{h} E[h_{T+k}] (h-period TOTAL variance).
+        cum_vol      : float, sqrt(cum_var) (h-period volatility, correctly
+                       aggregated -- the number to compare to an h-period target).
+        uncond_var   : float, omega/(1 - alpha - beta) (None-like nan if p>=1).
+
+    Detect/fix: if cum_vol ~ sqrt(h) * vol_path[0] you accidentally used the
+    naive scaling -- that only holds when alpha+beta -> 1 (no mean reversion).
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1.")
+    if omega <= 0:
+        raise ValueError("omega must be > 0 for positive variance.")
+    if alpha < 0 or beta < 0:
+        raise ValueError("alpha, beta must be >= 0.")
+    r, _ = _as_array(returns)
+    _check_finite(r, "returns")
+    n = r.size
+    if n == 0:
+        raise ValueError("Need at least one return to seed the forecast.")
+
+    # filtered conditional variance through T (h_T), reusing the filter's logic.
+    h_filt = garch11_filter(r, omega, alpha, beta).to_numpy() ** 2
+    h_T = float(h_filt[-1])
+    r_T = float(r[-1])
+
+    persistence = alpha + beta
+    if persistence < 1.0:
+        uncond = omega / (1.0 - persistence)
+    else:
+        uncond = float("nan")
+
+    var_path = np.empty(horizon, dtype=float)
+    # one-step uses the realized r_T^2; subsequent steps use E[r^2]=E[h].
+    var_path[0] = omega + alpha * r_T ** 2 + beta * h_T
+    for k in range(1, horizon):
+        var_path[k] = omega + persistence * var_path[k - 1]
+
+    cum_var = float(np.sum(var_path))
+    return {
+        "var_path": var_path,
+        "vol_path": np.sqrt(var_path),
+        "cum_var": cum_var,
+        "cum_vol": float(np.sqrt(cum_var)),
+        "uncond_var": float(uncond),
+    }
+
+
+def gjr_garch11_forecast(returns: ArrayLike, omega: float, alpha: float,
+                         gamma: float, beta: float, horizon: int = 1
+                         ) -> Dict[str, object]:
+    """h-step-ahead conditional-variance FORECAST PATH for GJR-GARCH(1,1).
+
+    Mirrors `garch11_forecast` with the leverage term. The one-step forecast
+    uses the realized last shock and its sign indicator,
+
+        h_{T+1} = omega + (alpha + gamma * 1[r_T < 0]) * r_T^2 + beta * h_T,
+
+    so a negative last move raises the one-step variance forecast more (the
+    leverage effect). For k >= 2 the future shock sign is unknown; under a
+    SYMMETRIC zero-mean innovation P(r<0)=1/2, so the expected ARCH multiplier
+    is E[alpha + gamma*1[r<0]] = alpha + gamma/2 and
+
+        E[h_{T+k}] = omega + (alpha + gamma/2 + beta) * E[h_{T+k-1}],  k >= 2.
+
+    The effective persistence is p_eff = alpha + gamma/2 + beta and the path
+    mean-reverts to V = omega/(1 - p_eff) (Glosten-Jagannathan-Runkle 1993;
+    standard forecast recursion). gamma = 0 reduces EXACTLY to
+    `garch11_forecast`.
+
+    CUMULATIVE h-period variance is again the SUM of the per-step path
+    variances, cum_var(h) = sum_{k=1}^{h} E[h_{T+k}] -- NOT a sqrt(h) scaling.
+
+    CAUSAL: uses returns only through T. Same lagging discipline applies when
+    sizing.
+
+    Returns the same dict shape as `garch11_forecast` (var_path, vol_path,
+    cum_var, cum_vol, uncond_var), with uncond_var = omega/(1 - p_eff).
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1.")
+    if omega <= 0:
+        raise ValueError("omega must be > 0 for positive variance.")
+    if alpha < 0 or beta < 0:
+        raise ValueError("alpha, beta must be >= 0.")
+    if alpha + gamma < 0:
+        raise ValueError("alpha + gamma must be >= 0 (non-negative neg-shock "
+                         "multiplier).")
+    r, _ = _as_array(returns)
+    _check_finite(r, "returns")
+    n = r.size
+    if n == 0:
+        raise ValueError("Need at least one return to seed the forecast.")
+
+    h_filt = gjr_garch11_filter(r, omega, alpha, gamma, beta).to_numpy() ** 2
+    h_T = float(h_filt[-1])
+    r_T = float(r[-1])
+
+    eff_persist = alpha + 0.5 * gamma + beta
+    if eff_persist < 1.0:
+        uncond = omega / (1.0 - eff_persist)
+    else:
+        uncond = float("nan")
+
+    var_path = np.empty(horizon, dtype=float)
+    lev = gamma if r_T < 0.0 else 0.0
+    var_path[0] = omega + (alpha + lev) * r_T ** 2 + beta * h_T
+    for k in range(1, horizon):
+        var_path[k] = omega + eff_persist * var_path[k - 1]
+
+    cum_var = float(np.sum(var_path))
+    return {
+        "var_path": var_path,
+        "vol_path": np.sqrt(var_path),
+        "cum_var": cum_var,
+        "cum_vol": float(np.sqrt(cum_var)),
+        "uncond_var": float(uncond),
+    }
+
+
+def qlike_loss(forecast_var: ArrayLike, realized_var: ArrayLike) -> np.ndarray:
+    """QLIKE loss of a variance forecast vs a realized-variance proxy (per obs).
+
+    QLIKE (quasi-likelihood) is the workhorse loss for evaluating VARIANCE (not
+    vol) forecasts. We use the standard robust form (Patton, "Volatility
+    forecast comparison using imperfect volatility proxies", J. Econometrics
+    2011), centered so the minimum is exactly 0:
+
+        L(f, p) = p / f - log(p / f) - 1,     f = forecast var, p = proxy var.
+
+    For a FIXED proxy p this is minimized over f at f = p (set dL/df = 0:
+    -p/f^2 + 1/f = 0 => f = p) with L(p, p) = 0, and it is convex in f. Crucially
+    QLIKE is ROBUST to noise in the proxy: if the proxy is conditionally
+    UNBIASED for the true variance (E[p | F] = sigma^2), the EXPECTED loss is
+    minimized at f = sigma^2 (the true conditional variance), so ranking
+    forecasts by mean QLIKE is consistent even though daily r^2 / RV is a noisy
+    proxy. Contrast MSE-on-variance, which is also robust but penalizes
+    over-prediction far less symmetrically; QLIKE penalizes under-prediction of
+    variance more, which is usually what a risk manager wants.
+
+    CAUSAL / leak-free: this is a pure evaluation metric. To avoid look-ahead in
+    a backtest, `forecast_var` at time t must have been formable from
+    information through t-1 (e.g. a trailing GARCH/HAR forecast) and aligned to
+    the realized proxy of the SAME period t; this function does not realign for
+    you.
+
+    Parameters
+    ----------
+    forecast_var : forecast VARIANCE (> 0), scalar or array.
+    realized_var : realized-variance proxy (>= 0), e.g. r_t^2 or RV_t, same
+        shape as forecast_var (or broadcastable).
+
+    Returns
+    -------
+    np.ndarray of per-observation QLIKE losses (>= 0; 0 iff forecast == proxy).
+    """
+    f = np.asarray(forecast_var, dtype=float)
+    p = np.asarray(realized_var, dtype=float)
+    if np.any(f <= 0):
+        raise ValueError("forecast_var must be strictly positive for QLIKE.")
+    if np.any(p < 0):
+        raise ValueError("realized_var must be non-negative.")
+    ratio = p / f
+    # p log(p/f): as p -> 0 the log term -> -inf but ratio -> 0; handle p==0
+    # via the limit L(f, 0) = 0/f - log(0) - 1 -> +inf is NOT what we want; the
+    # robust QLIKE with a zero proxy is L = -log(0) which diverges, so guard a
+    # zero proxy to a tiny floor to keep the metric finite and well-ordered.
+    ratio = np.where(ratio <= 0.0, 1e-300, ratio)
+    return ratio - np.log(ratio) - 1.0
+
+
+def mse_loss(forecast_var: ArrayLike, realized_var: ArrayLike) -> np.ndarray:
+    """Mean-squared-error loss on VARIANCE (per obs): (proxy - forecast)^2.
+
+    The other Patton (2011) "robust" loss: for a conditionally unbiased proxy
+    its expected value is minimized at the true conditional variance, so it is a
+    consistent ranking loss too. It is symmetric in the forecast error and
+    dominated by large-variance days (it weights the squared LEVEL error), which
+    makes it less discriminating than QLIKE in the low-vol regime. Reported on
+    the variance scale to match `qlike_loss` (square both inputs first if you
+    hold vols, not variances).
+
+    CAUSAL / leak-free: pure evaluation metric; same alignment discipline as
+    `qlike_loss` -- forecast for period t must be formable at t-1.
+
+    Returns np.ndarray of per-observation squared errors (>= 0).
+    """
+    f = np.asarray(forecast_var, dtype=float)
+    p = np.asarray(realized_var, dtype=float)
+    return (p - f) ** 2
+
+
+def diebold_mariano(loss_a: ArrayLike, loss_b: ArrayLike,
+                    hac_lags: Optional[int] = None) -> Dict[str, float]:
+    """Diebold-Mariano test for EQUAL predictive accuracy of two forecasts.
+
+    Given per-observation losses from model A and model B (e.g. two `qlike_loss`
+    series), forms the loss differential d_t = loss_a_t - loss_b_t and tests
+    H0: E[d_t] = 0 (equal accuracy) against the alternative that one model is
+    better (two-sided). The statistic is
+
+        DM = mean(d) / sqrt( Var_hat(mean(d)) ),
+        Var_hat(mean(d)) = (1/T) * LRV_hat,
+
+    where LRV_hat is a Newey-West / Bartlett HAC estimate of the long-run
+    variance of d_t (Diebold & Mariano 1995; HAC correction because forecast
+    errors -- and thus d_t -- are typically serially correlated, especially for
+    multi-step forecasts):
+
+        LRV_hat = gamma_0 + 2 * sum_{l=1}^{L} (1 - l/(L+1)) * gamma_l,
+
+    with gamma_l the sample autocovariance of d_t at lag l. Under H0, DM is
+    asymptotically N(0, 1); we report a two-sided normal p-value via
+    NormalDist (no scipy). A SMALL-SAMPLE Harvey-Leybourne-Newbold-style
+    correction is NOT applied here -- for very short series prefer that or a
+    bootstrap; for typical backtest lengths the normal approximation is fine.
+
+    Sign convention: DM < 0 means model A has LOWER mean loss (A is better);
+    DM > 0 means B is better. For IDENTICAL forecasts d_t == 0, mean and
+    variance are 0; we return DM = 0, p = 1 (no evidence either is better).
+
+    CAUSAL / leak-free: a comparison of realized out-of-sample losses; it has no
+    look-ahead provided both loss series were built from causal forecasts.
+
+    Parameters
+    ----------
+    loss_a, loss_b : equal-length per-observation loss series.
+    hac_lags : Bartlett truncation lag L for the HAC long-run variance. If None,
+        defaults to floor(4 * (T/100)^(2/9)) (the common Newey-West rule of
+        thumb); use the forecast horizon minus 1 (h-1) for an h-step forecast as
+        a principled minimum.
+
+    Returns
+    -------
+    dict(dm_stat, p_value, mean_diff, lrv, n, hac_lags).
+    """
+    a = np.asarray(loss_a, dtype=float)
+    b = np.asarray(loss_b, dtype=float)
+    if a.shape != b.shape:
+        raise ValueError("loss_a and loss_b must have the same shape.")
+    _check_finite(a, "loss_a")
+    _check_finite(b, "loss_b")
+    d = a - b
+    T = d.size
+    if T < 2:
+        raise ValueError("Need at least 2 observations for Diebold-Mariano.")
+
+    mean_d = float(np.mean(d))
+    dc = d - mean_d
+    # degenerate / identical-forecast case: zero differential -> no evidence.
+    var0 = float(np.mean(dc ** 2))  # gamma_0
+    if var0 <= 0.0:
+        return {
+            "dm_stat": 0.0,
+            "p_value": 1.0,
+            "mean_diff": mean_d,
+            "lrv": 0.0,
+            "n": int(T),
+            "hac_lags": 0,
+        }
+
+    if hac_lags is None:
+        L = int(np.floor(4.0 * (T / 100.0) ** (2.0 / 9.0)))
+    else:
+        L = int(hac_lags)
+    if L < 0:
+        raise ValueError("hac_lags must be >= 0.")
+    L = min(L, T - 1)
+
+    lrv = var0
+    for l in range(1, L + 1):
+        gamma_l = float(np.mean(dc[l:] * dc[:-l]))  # autocovariance at lag l
+        w = 1.0 - l / (L + 1.0)                     # Bartlett weight
+        lrv += 2.0 * w * gamma_l
+    # Bartlett kernel guarantees lrv >= 0; floor defensively for round-off.
+    lrv = max(lrv, 1e-300)
+
+    var_mean = lrv / T
+    dm = mean_d / np.sqrt(var_mean)
+    p = 2.0 * (1.0 - _NORM.cdf(abs(dm)))
+    return {
+        "dm_stat": float(dm),
+        "p_value": float(p),
+        "mean_diff": mean_d,
+        "lrv": float(lrv),
+        "n": int(T),
+        "hac_lags": int(L),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 3. Kalman filter: local-level (random walk + noise)
 # --------------------------------------------------------------------------- #
 def kalman_local_level(obs: ArrayLike, q: float, r: float) -> pd.Series:
@@ -949,7 +1286,8 @@ def cusum_changepoints(series: ArrayLike, threshold: float,
 # 7. Volatility targeting
 # --------------------------------------------------------------------------- #
 def vol_target_scale(forecast_vol: ArrayLike, target_vol: float,
-                     max_leverage: float = 3.0) -> Union[pd.Series, float]:
+                     max_leverage: float = 3.0,
+                     vol_floor: float = 0.0) -> Union[pd.Series, float]:
     """Position scaler for volatility targeting: scale = target_vol / forecast_vol.
 
     Sizes a position so its EX-ANTE volatility equals `target_vol`: when forecast
@@ -964,11 +1302,36 @@ def vol_target_scale(forecast_vol: ArrayLike, target_vol: float,
     through t, or har_rv's trailing forecast) and the resulting position lagged
     before earning returns.
 
+    THE PRO-CYCLICAL "LEVER INTO THE CALM BEFORE A JUMP" TRAP
+    --------------------------------------------------------
+    Vol targeting sizes on a backward-looking vol FORECAST, so it mechanically
+    PILES ON leverage exactly when realized vol has been low -- the late stage of
+    a quiet, complacent regime that historically PRECEDES jumps (the run-ups into
+    Aug-2015, Feb-2018 "Volmageddon", Mar-2020). The forecast says "calm, lever
+    up"; the position is then maximally exposed to the gap when the regime breaks.
+    This pro-cyclicality means the strategy can take its BIGGEST loss at its
+    HIGHEST leverage, and because the position is lagged the de-gear only happens
+    AFTER the jump prints. Mitigations: (1) a hard `max_leverage` cap (already
+    here); (2) `vol_floor` -- never divide by a vol below a sane floor, so the
+    scaler cannot explode in an artificially calm window; (3) blend in a SLOWER
+    (longer-memory) vol estimate or take the max of fast/slow vol so a brief lull
+    does not crank leverage; (4) overlay a tail hedge or jump-aware (GJR) vol that
+    anticipates asymmetric downside. Detect it by checking whether your peak
+    leverage clusters in the lowest-realized-vol quantile right before drawdowns.
+
+    `vol_floor` clamps the forecast vol from below BEFORE inverting:
+    scale = target_vol / max(forecast_vol, vol_floor). Set it to, e.g., a
+    fraction of long-run vol so that a freakishly calm window cannot push the
+    scaler to the cap. It composes with `max_leverage` (the floor bounds the
+    scaler at target_vol/vol_floor; the cap is the final hard limit).
+
     Parameters
     ----------
     forecast_vol : scalar or series of forecast per-period volatility (> 0).
     target_vol   : desired per-period volatility (same units), > 0.
     max_leverage : cap on the absolute scaler (default 3.0).
+    vol_floor    : minimum forecast vol used in the denominator (same units,
+        >= 0; default 0.0 = disabled). Guards the pro-cyclical trap above.
 
     Returns
     -------
@@ -979,9 +1342,14 @@ def vol_target_scale(forecast_vol: ArrayLike, target_vol: float,
         raise ValueError("target_vol must be > 0.")
     if max_leverage <= 0:
         raise ValueError("max_leverage must be > 0.")
+    if vol_floor < 0:
+        raise ValueError("vol_floor must be >= 0.")
 
     scalar_in = np.isscalar(forecast_vol)
     fv, idx = _as_array(forecast_vol)
+    # apply the floor first (anti-pro-cyclical guard), then guard divide-by-zero.
+    if vol_floor > 0:
+        fv = np.maximum(fv, vol_floor)
     # guard against divide-by-zero; tiny floor -> scaler hits the cap, not inf
     safe = np.where(fv > 0, fv, 1e-300)  # zero/degenerate vol -> hits the cap (vol->0+ limit), not 0
     scale = np.clip(target_vol / safe, 0.0, max_leverage)
@@ -1209,6 +1577,153 @@ def _test_realized_variance() -> None:
     assert np.all(fc[np.isfinite(fc)] > 0)
 
 
+def _test_garch_forecast() -> None:
+    # k=1 forecast must EQUAL the one-step filter recursion on the same params.
+    rng = np.random.default_rng(31)
+    omega, alpha, beta = 2e-6, 0.08, 0.90
+    r = _simulate_garch(2000, omega, alpha, beta, seed=31)
+    h_filt = garch11_filter(r, omega, alpha, beta).to_numpy() ** 2
+    # the one-step-ahead variance formed at T (the value the filter would assign
+    # to T+1 if r[T+1] arrived) is omega + alpha*r_T^2 + beta*h_T.
+    expected_1 = omega + alpha * r[-1] ** 2 + beta * h_filt[-1]
+    fc1 = garch11_forecast(r, omega, alpha, beta, horizon=1)
+    assert np.isclose(fc1["var_path"][0], expected_1), (fc1["var_path"][0],
+                                                        expected_1)
+    assert len(fc1["var_path"]) == 1
+    assert np.isclose(fc1["cum_var"], fc1["var_path"][0])
+    assert np.isclose(fc1["cum_vol"], np.sqrt(fc1["var_path"][0]))
+
+    # long-horizon path -> unconditional variance V = omega/(1-alpha-beta).
+    V = omega / (1.0 - alpha - beta)
+    fcL = garch11_forecast(r, omega, alpha, beta, horizon=4000)
+    assert np.isclose(fcL["uncond_var"], V)
+    assert abs(fcL["var_path"][-1] - V) < 1e-6 * V, (fcL["var_path"][-1], V)
+    # geometric mean reversion relative to the one-step forecast:
+    # var_path[j] = V + p^j * (var_path[0] - V), j = 0,1,2,... (0-based index).
+    p = alpha + beta
+    j = 49
+    pred = V + p ** j * (fcL["var_path"][0] - V)
+    assert np.isclose(fcL["var_path"][j], pred, rtol=1e-9), (
+        fcL["var_path"][j], pred)
+
+    # cumulative variance is the SUM of the path, NOT sqrt(h)-scaled. With
+    # mean-reversion and a starting variance below V, cum_var exceeds h*h1.
+    h = 20
+    fch = garch11_forecast(r, omega, alpha, beta, horizon=h)
+    assert np.isclose(fch["cum_var"], float(np.sum(fch["var_path"])))
+    naive_cum = h * fch["var_path"][0]
+    # they must differ unless persistence==1 (here p<1, with reversion toward V)
+    assert not np.isclose(fch["cum_var"], naive_cum), "cum != naive h*h1 expected"
+    # and the correct multi-horizon vol is NOT sqrt(h)*one-step vol
+    naive_sqrt_h_vol = np.sqrt(h) * fch["vol_path"][0]
+    assert not np.isclose(fch["cum_vol"], naive_sqrt_h_vol)
+
+
+def _test_gjr_forecast() -> None:
+    # gamma=0 must reproduce garch11_forecast EXACTLY.
+    rng = np.random.default_rng(33)
+    omega, alpha, beta = 2e-6, 0.06, 0.90
+    r = _simulate_garch(1500, omega, alpha, beta, seed=33)
+    fc_g = garch11_forecast(r, omega, alpha, beta, horizon=30)
+    fc_j = gjr_garch11_forecast(r, omega, alpha, 0.0, beta, horizon=30)
+    assert np.allclose(fc_g["var_path"], fc_j["var_path"]), "gamma=0 != GARCH"
+    assert np.isclose(fc_g["cum_var"], fc_j["cum_var"])
+
+    # k=1 forecast equals the one-step GJR filter recursion (with leverage).
+    omg, al, gam, bt = 3e-6, 0.02, 0.12, 0.85
+    rj = _simulate_gjr(1500, omg, al, gam, bt, seed=34)
+    h_filt = gjr_garch11_filter(rj, omg, al, gam, bt).to_numpy() ** 2
+    lev = gam if rj[-1] < 0.0 else 0.0
+    expected_1 = omg + (al + lev) * rj[-1] ** 2 + bt * h_filt[-1]
+    fc1 = gjr_garch11_forecast(rj, omg, al, gam, bt, horizon=1)
+    assert np.isclose(fc1["var_path"][0], expected_1)
+
+    # long horizon -> unconditional variance with effective persistence.
+    p_eff = al + 0.5 * gam + bt
+    V = omg / (1.0 - p_eff)
+    fcL = gjr_garch11_forecast(rj, omg, al, gam, bt, horizon=5000)
+    assert np.isclose(fcL["uncond_var"], V)
+    assert abs(fcL["var_path"][-1] - V) < 1e-6 * V, (fcL["var_path"][-1], V)
+
+
+def _test_forecast_losses_and_dm() -> None:
+    # QLIKE is minimized (==0) exactly at forecast == proxy, and grows away.
+    true_var = 0.04
+    grid = np.array([0.01, 0.02, 0.04, 0.08, 0.16])
+    losses = np.array([float(qlike_loss(np.array([f]),
+                                        np.array([true_var]))[0]) for f in grid])
+    imin = int(np.argmin(losses))
+    assert np.isclose(grid[imin], true_var), (grid[imin], true_var)
+    assert np.isclose(losses[imin], 0.0, atol=1e-12), losses[imin]
+    # convex / monotone away from the true value on each side
+    assert losses[0] > losses[1] > losses[2] < losses[3] < losses[4]
+
+    # QLIKE minimized at the TRUE variance IN EXPECTATION under a noisy but
+    # unbiased proxy p = true_var * chi2_1 (E[p]=true_var). The mean-QLIKE-
+    # minimizing constant forecast should sit ~ true_var.
+    rng = np.random.default_rng(41)
+    z = rng.standard_normal(40000)
+    proxy = true_var * z ** 2          # E[proxy] = true_var, very noisy
+    cand = np.linspace(0.02, 0.07, 26)
+    mean_q = np.array([qlike_loss(np.full(proxy.size, f), proxy).mean()
+                       for f in cand])
+    f_star = cand[int(np.argmin(mean_q))]
+    assert abs(f_star - true_var) < 0.005, (f_star, true_var)
+
+    # MSE per-obs is the squared variance error; minimized at proxy too.
+    mse = mse_loss(np.array([0.04, 0.05]), np.array([0.04, 0.04]))
+    assert np.allclose(mse, np.array([0.0, 0.0001]))
+
+    # Diebold-Mariano ~ 0 for IDENTICAL forecasts (zero loss differential).
+    la = qlike_loss(np.full(500, 0.03), proxy[:500])
+    res_same = diebold_mariano(la, la)
+    assert res_same["dm_stat"] == 0.0
+    assert res_same["p_value"] == 1.0
+    assert res_same["mean_diff"] == 0.0
+
+    # A genuinely better forecast (true var) vs a biased one (2x) -> DM<0 and
+    # significant (model A lower mean loss). Use a long sample for power.
+    fa = np.full(proxy.size, true_var)         # good
+    fb = np.full(proxy.size, 2.0 * true_var)   # biased high
+    la = qlike_loss(fa, proxy)
+    lb = qlike_loss(fb, proxy)
+    res = diebold_mariano(la, lb, hac_lags=0)
+    assert res["mean_diff"] < 0.0, res          # A has lower mean loss
+    assert res["dm_stat"] < -2.0, res["dm_stat"]
+    assert res["p_value"] < 0.05, res["p_value"]
+    # symmetry: swapping A and B flips the sign, same magnitude/p-value.
+    res_sw = diebold_mariano(lb, la, hac_lags=0)
+    assert np.isclose(res_sw["dm_stat"], -res["dm_stat"])
+    assert np.isclose(res_sw["p_value"], res["p_value"])
+
+    # HAC default lag selection runs and stays finite; lrv positive.
+    res_def = diebold_mariano(la, lb)
+    assert res_def["hac_lags"] >= 0 and np.isfinite(res_def["lrv"])
+    assert res_def["lrv"] > 0.0
+
+
+def _test_vol_floor() -> None:
+    # vol_floor caps the scaler at target/floor: a tiny forecast vol with a floor
+    # no longer slams into max_leverage.
+    s_no_floor = vol_target_scale(0.001, target_vol=0.10, max_leverage=10.0)
+    assert abs(s_no_floor - 10.0) < 1e-9, s_no_floor  # hits the cap
+    s_floor = vol_target_scale(0.001, target_vol=0.10, max_leverage=10.0,
+                               vol_floor=0.05)
+    assert abs(s_floor - 0.10 / 0.05) < 1e-12, s_floor  # = 2.0, not 10
+    # floor does nothing when forecast vol is already above it.
+    s_above = vol_target_scale(0.20, target_vol=0.10, vol_floor=0.05)
+    assert abs(s_above - 0.5) < 1e-12, s_above
+    # series path respects the floor element-wise.
+    fv = pd.Series([0.001, 0.20, 0.0], index=["lo", "mid", "zero"])
+    sc = vol_target_scale(fv, target_vol=0.10, max_leverage=10.0, vol_floor=0.05)
+    assert abs(sc["lo"] - 2.0) < 1e-12, sc["lo"]
+    assert abs(sc["mid"] - 0.5) < 1e-12, sc["mid"]
+    assert abs(sc["zero"] - 2.0) < 1e-12, sc["zero"]  # zero floored to 0.05
+    # backward compatibility: default vol_floor=0.0 leaves old behavior intact.
+    assert abs(vol_target_scale(0.001, target_vol=0.10, max_leverage=3.0)
+               - 3.0) < 1e-12
+
+
 def _test_kalman_local_level() -> None:
     rng = np.random.default_rng(2)
     true_c = 5.0
@@ -1335,6 +1850,10 @@ def _run_all_tests() -> None:
     _test_har_beats_static_baseline()
     _test_har_no_lookahead()
     _test_har_log_space()
+    _test_garch_forecast()
+    _test_gjr_forecast()
+    _test_forecast_losses_and_dm()
+    _test_vol_floor()
     _test_kalman_local_level()
     _test_kalman_dynamic_beta()
     _test_hmm()

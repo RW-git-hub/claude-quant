@@ -216,12 +216,24 @@ def slippage_total(
 # --------------------------------------------------------------------------- #
 # Financing / carry costs (DOLLARS -- not return fractions)
 # --------------------------------------------------------------------------- #
-def borrow_cost(short_notional: float, annual_rate: float, days: float) -> float:
+def borrow_cost(
+    short_notional: float,
+    annual_rate: float,
+    days: float,
+    day_count: float = 365.0,
+) -> float:
     """Stock-borrow financing cost in DOLLARS for holding a short.
 
-    Formula (ACT/365, simple, no compounding)
-    -----------------------------------------
-        cost = short_notional * annual_rate * days / 365
+    Formula (ACT/``day_count``, simple, no compounding)
+    ---------------------------------------------------
+        cost = short_notional * annual_rate * days / day_count
+
+    ``day_count`` selects the day-count basis for the annualized rate. The
+    default 365.0 is ACT/365 (the usual equity-borrow convention). Pass 360.0
+    for ACT/360 (money-market basis used by many financing desks); the same
+    annual_rate over the same calendar ``days`` then costs MORE, because a
+    360-day year amortizes the annual fee over fewer days
+    (``days/360 > days/365``).
 
     Parameters
     ----------
@@ -229,12 +241,20 @@ def borrow_cost(short_notional: float, annual_rate: float, days: float) -> float
     annual_rate    : annualized borrow fee as a fraction (e.g. 0.05 == 5%/yr).
                      Hard-to-borrow names can be tens of percent.
     days           : holding period in calendar days.
+    day_count      : days-per-year basis for the rate (365.0 default, or 360.0
+                     for ACT/360). Must be > 0.
 
     Returns
     -------
     Borrow cost in dollars (positive == cost paid).
+
+    Raises
+    ------
+    ValueError : if ``day_count <= 0``.
     """
-    return short_notional * annual_rate * days / 365.0
+    if not day_count > 0:
+        raise ValueError(f"day_count must be > 0 (got {day_count!r}).")
+    return short_notional * annual_rate * days / day_count
 
 
 def funding_cost(notional: float, funding_rate: float, n_intervals: int) -> float:
@@ -334,6 +354,146 @@ def apply_costs(
     return gross_returns - turnover * cost_per_turnover
 
 
+def cost_sweep(
+    returns: pd.Series,
+    turnover: pd.Series,
+    bps_grid: ArrayLike,
+    periods_per_year: float = 252.0,
+) -> pd.Series:
+    """Net annualized Sharpe at each per-turnover cost level (a cost sensitivity).
+
+    For every cost level ``c`` in ``bps_grid`` (basis points charged per unit of
+    turnover), recompute net returns ``net_t = gross_t - turnover_t * c/1e4`` and
+    report the annualized Sharpe of that net series. This shows how fast the edge
+    decays as you make the cost assumption more pessimistic -- a strategy whose
+    Sharpe collapses by 10 bps is fragile to execution.
+
+    Sharpe = mean(net)/std(net) * sqrt(periods_per_year), using the SAME sample
+    std (ddof=1, pandas default) at every grid point so the comparison is clean.
+    Because raising ``c`` only ever subtracts more from each period's return, the
+    net Sharpe is non-increasing in ``c`` for a non-negative turnover series.
+
+    Leak-safety
+    -----------
+    Causal: each net return at t uses only gross[t] and turnover[t]. Lag/align
+    ``turnover`` to the period in which trades actually execute BEFORE calling
+    (same requirement as ``apply_costs``); this function does no shifting.
+
+    Parameters
+    ----------
+    returns          : per-period gross strategy returns (fractions).
+    turnover         : per-period turnover (fraction of book traded), same index.
+    bps_grid         : iterable of per-turnover costs in BPS (e.g. [0, 5, 10, 20]).
+    periods_per_year : annualization factor (252 daily, 52 weekly, 12 monthly).
+
+    Returns
+    -------
+    pd.Series of net annualized Sharpe indexed by the bps level (float index).
+
+    Raises
+    ------
+    ValueError : if ``periods_per_year <= 0``.
+    """
+    if not periods_per_year > 0:
+        raise ValueError(
+            f"periods_per_year must be > 0 (got {periods_per_year!r})."
+        )
+    returns, turnover = returns.align(turnover, join="left")
+    turnover = turnover.fillna(0.0)
+    ann = math.sqrt(periods_per_year)
+    grid = np.asarray(bps_grid, dtype=float)
+    out = {}
+    for bps in grid:
+        net = returns - turnover * (bps / BPS_PER_UNIT)
+        sd = net.std()  # ddof=1
+        if not sd > 0:
+            sharpe = 0.0 if net.mean() == 0.0 else float("inf") * np.sign(net.mean())
+        else:
+            sharpe = net.mean() / sd * ann
+        out[float(bps)] = sharpe
+    return pd.Series(out, name="net_sharpe")
+
+
+def capacity_curve(
+    aum_grid: ArrayLike,
+    gross_ann_return: float,
+    annual_turnover: float,
+    adv_dollars: float,
+    daily_vol: float,
+    impact_coef: float = 1.0,
+    fixed_cost_bps: float = 0.0,
+) -> pd.Series:
+    """Hump-shaped net annual DOLLAR profit vs AUM, re-costing sqrt impact.
+
+    Models the classic capacity trade-off. Gross alpha (as a fraction of capital)
+    is roughly scale-invariant, so gross dollar profit grows LINEARLY in AUM. But
+    each rebalance must trade a larger fraction of ADV as the book grows, so the
+    square-root impact charged per unit turnover GROWS like ``sqrt(AUM)`` and the
+    dollar impact bill grows like ``AUM^1.5`` -- super-linearly. Net dollar profit
+    therefore RISES (alpha dominates) then FALLS (impact dominates): a hump with a
+    single interior optimum, after which adding capital DESTROYS dollar profit.
+
+    Returning DOLLARS (not a return fraction) is what produces the hump: as a
+    fraction of capital, net return is monotone-decreasing in AUM, but the dollar
+    curve -- the quantity a fund actually maximizes -- is concave with an interior
+    peak. See Kyle/Obizhaeva sqrt-impact capacity intuition.
+
+    Per-AUM construction
+    --------------------
+    Let ``A`` be AUM in dollars. Annual notional traded is ``annual_turnover*A``.
+    Participation of a representative rebalance trade is ``A / adv_dollars``::
+
+        impact_per_turn = impact_coef * daily_vol * sqrt(A / adv_dollars)   # frac
+        cost_frac       = annual_turnover * (fixed_cost_bps/1e4 + impact_per_turn)
+        net_dollar_pnl  = A * (gross_ann_return - cost_frac)
+
+    Closed form for the peak (ignoring the linear fixed term, which only shifts
+    the height): with ``k = annual_turnover*impact_coef*daily_vol/sqrt(adv)`` the
+    net PnL is ``A*g - k*A^1.5``; ``d/dA = 0`` at ``A* = (2g/(3k))**2``, a single
+    interior maximum whenever ``g > 0`` and ``k > 0``.
+
+    Leak-safety
+    -----------
+    Pure cross-sectional re-costing of a single gross-alpha assumption; no time
+    series, no look-ahead. ``gross_ann_return`` must itself be an honest,
+    cost-free estimate produced upstream without leakage.
+
+    Parameters
+    ----------
+    aum_grid         : iterable of book sizes in DOLLARS (must be > 0).
+    gross_ann_return : gross annual return as a fraction (scale-invariant alpha).
+    annual_turnover  : annual turnover (notional traded / capital, e.g. 5.0).
+    adv_dollars      : average daily volume in DOLLARS for the traded universe.
+    daily_vol        : daily return volatility as a fraction (e.g. 0.02 == 2%).
+    impact_coef      : square-root impact calibration constant (default 1.0).
+    fixed_cost_bps   : size-independent per-turnover cost in bps (commission +
+                       half-spread), default 0.0.
+
+    Returns
+    -------
+    pd.Series of net annual DOLLAR profit indexed by AUM (float index).
+
+    Raises
+    ------
+    ValueError : if ``adv_dollars <= 0`` or any AUM <= 0.
+    """
+    if not adv_dollars > 0:
+        raise ValueError(
+            f"adv_dollars must be > 0 (got {adv_dollars!r})."
+        )
+    aum = np.asarray(aum_grid, dtype=float)
+    if not np.all(aum > 0):
+        raise ValueError("all aum_grid values must be > 0.")
+    fixed = fixed_cost_bps / BPS_PER_UNIT
+    out = {}
+    for a in aum:
+        participation = a / adv_dollars
+        impact_per_turn = impact_coef * daily_vol * math.sqrt(participation)
+        cost_frac = annual_turnover * (fixed + impact_per_turn)
+        out[float(a)] = a * (gross_ann_return - cost_frac)
+    return pd.Series(out, name="net_dollar_pnl")
+
+
 # --------------------------------------------------------------------------- #
 # Self-tests: analytic / synthetic cases. Run: python costs.py
 # --------------------------------------------------------------------------- #
@@ -408,6 +568,24 @@ if __name__ == "__main__":
     assert abs(borrow_cost(0.0, 0.05, 365) - 0.0) < TOL
     # linear in days: half the days -> half the cost.
     assert abs(borrow_cost(1e6, 0.05, 182.5) - 25_000.0) < 1e-6
+    # day_count: default is ACT/365 and unchanged by the new param.
+    assert abs(borrow_cost(1e6, 0.05, 365) - borrow_cost(1e6, 0.05, 365, day_count=365)) < 1e-6
+    # ACT/360 costs MORE than ACT/365 for the same rate/days (365/360 ratio).
+    assert borrow_cost(1e6, 0.05, 30, day_count=360) > borrow_cost(1e6, 0.05, 30, day_count=365)
+    # analytic: 1e6*0.05*360/360 = 50,000 over a full 360-day "year".
+    assert abs(borrow_cost(1e6, 0.05, 360, day_count=360) - 50_000.0) < 1e-6
+    # exact ratio between bases is 365/360.
+    r360 = borrow_cost(1e6, 0.05, 30, day_count=360)
+    r365 = borrow_cost(1e6, 0.05, 30, day_count=365)
+    assert abs(r360 / r365 - 365.0 / 360.0) < 1e-12
+    # day_count guard.
+    for bad_dc in (0.0, -360.0):
+        try:
+            borrow_cost(1e6, 0.05, 30, day_count=bad_dc)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for day_count={bad_dc}")
 
     # --- funding_cost: sign conventions --------------------------------------
     # Positive funding + LONG notional => positive => a COST to the long.
@@ -451,5 +629,79 @@ if __name__ == "__main__":
     assert np.allclose(apply_costs(gross, turn, 0.0).values, gross.values, atol=TOL)
     # index preserved.
     assert net.index.equals(gross.index)
+
+    # --- cost_sweep: net Sharpe is non-increasing as bps rise ----------------
+    rs = np.random.RandomState(0)
+    cs_idx = pd.date_range("2024-01-01", periods=500, freq="D")
+    # Positive-drift gross returns so the zero-cost Sharpe is clearly > 0.
+    cs_gross = pd.Series(0.0008 + 0.01 * rs.randn(500), index=cs_idx)
+    cs_turn = pd.Series(0.5 + 0.1 * np.abs(rs.randn(500)), index=cs_idx)  # >0
+    bps_grid = [0.0, 5.0, 10.0, 20.0, 50.0]
+    sweep = cost_sweep(cs_gross, cs_turn, bps_grid, periods_per_year=252.0)
+    assert list(sweep.index) == [float(b) for b in bps_grid]
+    # strictly decreasing here (turnover strictly positive, mean drift positive).
+    sv = sweep.values
+    assert all(b < a for a, b in zip(sv, sv[1:])), sv
+    # zero-bps row equals the raw annualized Sharpe of the gross series.
+    raw_sharpe = cs_gross.mean() / cs_gross.std() * math.sqrt(252.0)
+    assert abs(sweep.loc[0.0] - raw_sharpe) < 1e-12
+    # analytic single-point check against apply_costs at 10 bps.
+    net10 = apply_costs(cs_gross, cs_turn, 10.0 / BPS_PER_UNIT)
+    sharpe10 = net10.mean() / net10.std() * math.sqrt(252.0)
+    assert abs(sweep.loc[10.0] - sharpe10) < 1e-12
+    # periods_per_year guard.
+    try:
+        cost_sweep(cs_gross, cs_turn, bps_grid, periods_per_year=0.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for periods_per_year=0")
+
+    # --- capacity_curve: hump-shaped net dollar PnL (rises then falls) -------
+    # g=0.15, turnover=10, adv=1e8, dvol=0.02, coef=1, fixed=0 give analytic
+    #   k = 10*1*0.02/sqrt(1e8) = 2e-5 ; A* = (2g/(3k))^2 = (0.3/6e-5)^2 = 2.5e7.
+    g_, to_, adv_, dv_ = 0.15, 10.0, 1e8, 0.02
+    aum_grid = [1e6, 5e6, 1e7, 2.5e7, 5e7, 1e8, 2.5e8, 5e8, 1e9]
+    cap = capacity_curve(
+        aum_grid,
+        gross_ann_return=g_,
+        annual_turnover=to_,
+        adv_dollars=adv_,
+        daily_vol=dv_,
+        impact_coef=1.0,
+        fixed_cost_bps=0.0,
+    )
+    assert list(cap.index) == [float(a) for a in aum_grid]
+    cv = cap.values
+    # A hump: argmax is interior, non-decreasing up to the peak, then decreasing.
+    peak = int(np.argmax(cv))
+    assert 0 < peak < len(cv) - 1, (peak, cv)
+    assert all(cv[i] <= cv[i + 1] + TOL for i in range(peak)), cv
+    assert all(cv[i] > cv[i + 1] for i in range(peak, len(cv) - 1)), cv
+    # The analytic optimum 2.5e7 is on the grid and is the peak.
+    assert cap.index[peak] == 2.5e7
+    # Analytic value at A=adv=1e8: participation=1, impact_per_turn=0.02,
+    #   cost_frac = 10*0.02 = 0.20 ; net = 1e8*(0.15-0.20) = -5e6.
+    assert abs(cap.loc[1e8] - 1e8 * (0.15 - 10.0 * 0.02)) < 1e-3
+    # Past capacity the curve goes negative (impact bill exceeds gross alpha).
+    assert cap.iloc[-1] < 0.0
+    # fixed_cost_bps only lowers the curve, never raises it.
+    cap_fixed = capacity_curve(
+        aum_grid, g_, to_, adv_, dv_, impact_coef=1.0, fixed_cost_bps=5.0
+    )
+    assert (cap_fixed.values <= cv + TOL).all()
+    # guards.
+    try:
+        capacity_curve([1e6], 0.15, 10.0, 0.0, 0.02)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for adv_dollars=0")
+    try:
+        capacity_curve([1e6, -1.0], 0.15, 10.0, 1e8, 0.02)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for non-positive aum")
 
     print("costs.py: all self-tests passed.")

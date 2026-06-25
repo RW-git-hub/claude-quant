@@ -37,7 +37,7 @@ Almost every blown backtest dies from one disease: **information from the future
 4. **Feature/label & normalization leakage.** Global `mean/std/quantile/rank`, `StandardScaler.fit`/`PCA.fit` on full sample, `bfill`/interpolate, PIT fundamentals not lagged by reporting delay, IC computed vs contemporaneous (not forward) returns, or labels whose forward window overlaps training without purge+embargo.
 5. **CV & test-set hygiene.** Reject `KFold(shuffle=True)` on time series. Verify purged+embargoed CV or walk-forward (embargo ≥ label horizon); confirm the holdout was touched once; demand the trial count.
 6. **Costs & frictions.** Commission + half-spread + slippage + size/vol impact (`~σ·sqrt(Q/ADV)`), on turnover; borrow/funding/FX where relevant. Compute break-even cost; demand ±50–100% cost-stress survival.
-7. **Benchmark & metrics.** Risk-/exposure-matched benchmark (not cash); excess vs correct risk-free; `ddof=1`; drawdown on compounded equity; Lo (2002) if PnL autocorrelates; Deflated/Probabilistic Sharpe (PSR benchmark in per-period units).
+7. **Benchmark & metrics.** Risk-/exposure-matched benchmark (not cash); excess vs correct risk-free; `ddof=1`; drawdown on compounded equity; Lo (2002) if PnL autocorrelates. If the reported Sharpe needs multiple-testing deflation (Deflated/Probabilistic Sharpe, PBO), flag it and **hand the verdict to `overfitting-detective`** — that statistical verdict is its remit, not the auditor's.
 
 ## Severity rubric
 - **CRITICAL** — fabricates the result: same-bar fills, survivorship, full-sample scaler/PCA, shuffled CV, zero costs on high turnover.

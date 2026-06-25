@@ -48,9 +48,10 @@ class RiskLimits:
         max_order_notional:     Max |qty * price| for a single order.
         max_position_notional:  Max |resulting signed position notional| per symbol.
         max_gross_notional:     Max portfolio gross (sum of |position notional|)
-                                after the fill. Uses `order.ref_price` as the
-                                mark for the traded symbol and the order's price
-                                for that symbol's leg (see note in check_order).
+                                after the fill. Each held symbol is valued at its
+                                own mark (via the `marks` arg of check_order; the
+                                traded symbol's leg uses the order price). A
+                                missing mark fails closed (see check_order).
         price_collar_bps:       Max allowed |price/ref_price - 1| in basis points.
                                 Guards against fat-finger / stale-quote prices.
         max_participation_pct:  Max qty/ADV as a percent (only checked if adv given).
@@ -90,6 +91,8 @@ def check_order(
     positions: Dict[str, float],
     limits: RiskLimits,
     adv: Optional[Dict[str, float]] = None,
+    working_orders: Optional[Dict[str, Dict[str, object]]] = None,
+    marks: Optional[Dict[str, float]] = None,
 ) -> Dict[str, object]:
     """Evaluate one order against hard risk limits.
 
@@ -100,11 +103,39 @@ def check_order(
             qty:       positive magnitude of shares/contracts to trade
             price:     limit/expected fill price used for notional and collar
             ref_price: reference (e.g. last/mid/arrival) price for the collar
-                       and as the mark for existing positions in the gross check
+                       and as the fallback mark for existing positions in the
+                       gross check
+            clOrdID:   optional client order id. Required (must be present) only
+                       when `working_orders` is supplied, so the duplicate /
+                       self-cross checks have a stable identity to key on.
         positions: symbol -> current signed position (qty). Long > 0, short < 0.
         limits:    RiskLimits instance.
         adv:       optional symbol -> average daily volume (same units as qty).
                    If provided, the participation check is applied.
+        working_orders: optional clOrdID -> resting order dict already live at the
+                   venue. Each value is an order-shaped dict carrying at least
+                   `symbol` and `side`. When supplied (opt-in), two extra gates
+                   run:
+                     * double-send: if this order's `clOrdID` already keys a
+                       working order, reject (an idempotent client must not
+                       re-send the same id; a re-send usually means a retry storm
+                       or a lost ack, never a second intended order).
+                     * self-cross: if a resting working order on the SAME symbol
+                       sits on the OPPOSITE side, flag it -- crossing your own
+                       book is wash-trade-adjacent and almost always an error.
+                   Causal/leak-free: `working_orders` is the set of orders live
+                   *as of* this decision; it contains no future state. This makes
+                   the gate safe to replay in a backtest with a point-in-time
+                   working-order book.
+        marks:     optional symbol -> mark price for the gross-notional check. Each
+                   HELD symbol is valued at ITS OWN mark, not the traded symbol's
+                   price. When `marks` is supplied, a held symbol with NO mark
+                   fails closed (we will not silently mismark a position to zero or
+                   to an unrelated symbol's price). When `marks` is None the legacy
+                   behaviour is kept: held legs are marked at the order's
+                   ref_price. The traded symbol's resulting leg always uses the
+                   order price, consistent with the per-symbol position check.
+                   Leak-free: marks are point-in-time observable inputs.
 
     Returns:
         dict(ok: bool, violations: list[str]). ok == (len(violations) == 0).
@@ -162,17 +193,42 @@ def check_order(
 
     # --- Resulting portfolio gross notional --------------------------------
     # Gross = sum of |position notional| across all symbols after the fill.
-    # Existing positions are marked at this order's ref_price as a stand-in for
-    # a live mark (a fuller system passes per-symbol marks; we keep the input
-    # surface minimal and document the approximation). The traded symbol's leg
-    # uses the order price to stay consistent with the per-symbol check above.
+    # Each HELD symbol is valued at ITS OWN mark (marks[sym]) -- marking the whole
+    # book at the traded symbol's price systematically mis-states gross whenever
+    # symbols trade at different price levels. If `marks` is supplied and a held
+    # symbol has no mark, we FAIL CLOSED rather than substitute an unrelated price
+    # (a missing mark is a data gap, not a free pass). If `marks` is None we keep
+    # the legacy behaviour: held legs marked at the order's ref_price. The traded
+    # symbol's resulting leg always uses the order price, consistent with the
+    # per-symbol position check above.
     gross = 0.0
+    gross_data_ok = True
     for sym, q in positions.items():
         if sym == symbol:
             continue
-        gross += abs(float(q)) * ref_price
+        if marks is not None:
+            if sym not in marks:
+                violations.append(
+                    f"no mark for held symbol {sym} in gross check "
+                    f"(failing closed)"
+                )
+                gross_data_ok = False
+                continue
+            sym_mark = float(marks[sym])
+            if sym_mark <= 0:
+                violations.append(
+                    f"mark for held symbol {sym} is {sym_mark} (not positive)"
+                )
+                gross_data_ok = False
+                continue
+        else:
+            sym_mark = ref_price
+        gross += abs(float(q)) * sym_mark
     gross += resulting_pos_notional
-    if gross > limits.max_gross_notional:
+    # Only assert against the limit when every held leg was marked. With a missing
+    # or bad mark the gross is incomplete; we have already failed closed above and
+    # an incomplete sum could otherwise look spuriously compliant.
+    if gross_data_ok and gross > limits.max_gross_notional:
         violations.append(
             f"resulting gross notional {gross:,.2f} exceeds "
             f"max_gross_notional {limits.max_gross_notional:,.2f}"
@@ -204,6 +260,38 @@ def check_order(
         else:
             # ADV present but non-positive is malformed data -> fail closed.
             violations.append(f"adv for {symbol} is {symbol_adv} (not positive)")
+
+    # --- Working-order gates (opt-in: only when working_orders supplied) ----
+    # These guard against operationally-broken sends rather than risk-limit
+    # breaches. Both read only the point-in-time working-order book, so they are
+    # causal/leak-free and safe to replay.
+    if working_orders is not None:
+        cl_ord_id = order.get("clOrdID")
+        if cl_ord_id is None:
+            # Identity is required to reason about duplicates: fail closed.
+            violations.append(
+                "clOrdID is required when working_orders is supplied "
+                "(cannot check double-send without an id)"
+            )
+        elif cl_ord_id in working_orders:
+            # Double-send: the same client id is already live at the venue.
+            violations.append(
+                f"clOrdID {cl_ord_id!r} is already working (double-send rejected)"
+            )
+
+        # Self-cross: any resting order on the same symbol, opposite side.
+        this_side = side.lower()
+        for w_id, w_order in working_orders.items():
+            if w_id == cl_ord_id:
+                continue  # the order itself, handled by the double-send check
+            if str(w_order.get("symbol")) != symbol:
+                continue
+            w_side = str(w_order.get("side")).lower()
+            if w_side and w_side != this_side:
+                violations.append(
+                    f"self-cross: working order {w_id!r} is {w_side} {symbol} "
+                    f"against this {this_side} (crossing your own book)"
+                )
 
     return {"ok": len(violations) == 0, "violations": violations}
 
@@ -449,5 +537,111 @@ if __name__ == "__main__":
     assert any("max_position_notional" in v for v in res["violations"]), res
     # AAPL participation: 50,000 / 5,000,000 = 1% < 10% -> should NOT appear.
     assert not any("participation" in v for v in res["violations"]), res
+
+    # --- 11. Double-send: an already-working clOrdID is rejected ------------
+    # The same client order id is resting at the venue. Re-sending it (a retry
+    # storm / lost-ack) must be rejected even though the order is otherwise fine.
+    working = {
+        "CLORD-1": {"symbol": "AAPL", "side": "buy", "qty": 100.0, "price": 200.0},
+    }
+    dup_order = {
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": 100.0,
+        "price": 200.0,        # fully compliant on every risk dimension
+        "ref_price": 200.0,
+        "clOrdID": "CLORD-1",  # collides with a working order
+    }
+    res = check_order(dup_order, positions, limits, adv, working_orders=working)
+    assert res["ok"] is False, res
+    assert any("double-send" in v for v in res["violations"]), res
+
+    # A fresh clOrdID against the same working book passes the double-send gate
+    # (and is not a self-cross: working CLORD-1 is buy, this is buy too).
+    fresh_order = {
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": 100.0,
+        "price": 200.0,
+        "ref_price": 200.0,
+        "clOrdID": "CLORD-2",
+    }
+    res = check_order(fresh_order, positions, limits, adv, working_orders=working)
+    assert res["ok"] is True, res
+    assert res["violations"] == [], res
+
+    # Self-cross: a fresh id but the SAME symbol on the OPPOSITE side is flagged.
+    cross_order = {
+        "symbol": "AAPL",
+        "side": "sell",        # opposite of the resting buy on AAPL
+        "qty": 100.0,
+        "price": 200.0,
+        "ref_price": 200.0,
+        "clOrdID": "CLORD-3",
+    }
+    res = check_order(cross_order, positions, limits, adv, working_orders=working)
+    assert res["ok"] is False, res
+    assert any("self-cross" in v for v in res["violations"]), res
+
+    # Backwards-compatible: with no working_orders supplied, clOrdID is ignored
+    # and the legacy behaviour is unchanged.
+    res = check_order(dup_order, positions, limits, adv)
+    assert res["ok"] is True, res
+    assert res["violations"] == [], res
+
+    # --- 12. Multi-price gross via per-symbol marks ------------------------
+    # AAPL 1,000 long, MSFT 500 short. Mark AAPL @ 300, MSFT @ 50.
+    #   AAPL leg: 1,000 * 300 = 300,000
+    #   MSFT leg:   500 *  50 =  25,000   -> existing gross 325,000
+    # Trade GOOG: buy 100 @ 100 -> +10,000 GOOG leg. Resulting gross = 335,000.
+    # If the book were (wrongly) marked all-at-100 like the old code, existing
+    # gross would be (1,000 + 500) * 100 = 150,000 -> total 160,000, which would
+    # PASS a 200,000 limit. With correct marks (335,000) it must FAIL.
+    mark_positions = {"AAPL": 1_000.0, "MSFT": -500.0}
+    mark_marks = {"AAPL": 300.0, "MSFT": 50.0}
+    mark_limits = RiskLimits(
+        max_order_notional=1_000_000.0,
+        max_position_notional=1_000_000.0,
+        max_gross_notional=200_000.0,
+        price_collar_bps=50.0,
+        max_participation_pct=100.0,
+        kill_switch=False,
+    )
+    mark_order = {
+        "symbol": "GOOG",
+        "side": "buy",
+        "qty": 100.0,
+        "price": 100.0,
+        "ref_price": 100.0,
+    }
+    res = check_order(mark_order, mark_positions, mark_limits, marks=mark_marks)
+    assert res["ok"] is False, res
+    assert any("max_gross_notional" in v for v in res["violations"]), res
+    # The reported gross is the correctly-marked 335,000, not the all-at-100
+    # 160,000 the old single-price code would have produced.
+    assert any("335,000" in v for v in res["violations"]), res
+
+    # Same book, but a generous limit -> the correctly-marked gross passes.
+    mark_limits_wide = RiskLimits(
+        max_order_notional=1_000_000.0,
+        max_position_notional=1_000_000.0,
+        max_gross_notional=400_000.0,
+        price_collar_bps=50.0,
+        max_participation_pct=100.0,
+        kill_switch=False,
+    )
+    res = check_order(mark_order, mark_positions, mark_limits_wide, marks=mark_marks)
+    assert res["ok"] is True, res
+    assert res["violations"] == [], res
+
+    # --- 13. Missing mark fails closed -------------------------------------
+    # marks supplied but MSFT has no mark -> reject; do NOT silently mismark.
+    partial_marks = {"AAPL": 300.0}  # MSFT missing
+    res = check_order(mark_order, mark_positions, mark_limits_wide, marks=partial_marks)
+    assert res["ok"] is False, res
+    assert any("no mark for held symbol MSFT" in v for v in res["violations"]), res
+    # And it must not have spuriously emitted a gross-limit pass/fail off the
+    # incomplete sum.
+    assert not any("max_gross_notional" in v for v in res["violations"]), res
 
     print("pretrade_checks.py: all self-tests passed.")

@@ -33,10 +33,10 @@ risk-parity portfolio", "price these options / greeks", "devig this Polymarket l
 This plugin ships the `claude-quant` skill, **13 focused quick-draw skills**, and **20 specialized subagents** (all listed below). The `claude-quant` skill provides:
 
 - **`SKILL.md`** — entry point: Iron Laws, task router, canonical conventions
-- **`references/`** — 19 on-demand deep-dives (factor research, transaction costs, ML for
+- **`references/`** — 20 on-demand deep-dives (factor research, transaction costs, ML for
   alpha, derivatives, stat-arb, portfolio optimization, microstructure, regimes,
   robustness, crypto/DeFi, risk management, live trading, prediction/sports markets, …)
-- **`templates/`** — 19 correct, self-testing starting points (numpy/pandas)
+- **`templates/`** — 21 correct, self-testing starting points (numpy/pandas)
 - **`examples/end_to_end.py`** — a full worked pipeline: data → factor → portfolio →
   costs → metrics → cross-validation
 
